@@ -1,0 +1,689 @@
+# 状态监控方案
+
+## 方案概述
+
+本方案详细设计客户端在线情况监控和摄像头在线状态监控的具体实现，包括状态检测机制、数据上报流程和监控界面设计。
+
+## 客户端在线监控
+
+### 监控维度
+
+#### 1. 应用程序级别监控
+```csharp
+// src/MaterialClient.Urban/Services/ClientStatusMonitor.cs
+public class ClientStatusMonitor : IClientStatusMonitor
+{
+    private readonly Process _currentProcess;
+    private readonly PerformanceCounter? _cpuCounter;
+    private readonly PerformanceCounter? _memoryCounter;
+    
+    public async Task<ClientStatusInfo> GetCurrentStatusAsync()
+    {
+        return new ClientStatusInfo
+        {
+            MachineName = Environment.MachineName,
+            IpAddress = GetLocalIpAddress(),
+            AppVersion = GetAppVersion(),
+            StartTime = _currentProcess.StartTime,
+            IsOnline = true,
+            CpuUsage = GetCpuUsage(),
+            MemoryUsage = GetMemoryUsage(),
+            ThreadCount = _currentProcess.Threads.Count,
+            HandleCount = _currentProcess.HandleCount
+        };
+    }
+    
+    private double GetCpuUsage()
+    {
+        try
+        {
+            return _cpuCounter?.NextValue() ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+    
+    private double GetMemoryUsage()
+    {
+        var usedMemory = _currentProcess.WorkingSet64 / 1024 / 1024; // MB
+        var totalMemory = GetTotalSystemMemory();
+        return (double)usedMemory / totalMemory * 100;
+    }
+}
+```
+
+#### 2. 网络连接状态监控
+```csharp
+// src/MaterialClient.Urban/Services/NetworkStatusMonitor.cs
+public class NetworkStatusMonitor : INetworkStatusMonitor
+{
+    public async Task<NetworkStatusInfo> GetNetworkStatusAsync()
+    {
+        return new NetworkStatusInfo
+        {
+            IsInternetAvailable = await CheckInternetConnectionAsync(),
+            IsServerReachable = await CheckServerConnectionAsync(),
+            Latency = await MeasureLatencyAsync(),
+            NetworkInterface = GetActiveNetworkInterface(),
+            DnsServers = GetDnsServers()
+        };
+    }
+    
+    private async Task<bool> CheckServerConnectionAsync()
+    {
+        try
+        {
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(5);
+            var response = await client.GetAsync(_serverUrl + "/health");
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+```
+
+#### 3. 心跳机制设计
+```csharp
+// src/MaterialClient.Urban/Services/HeartbeatService.cs
+public class HeartbeatService : IHeartbeatService
+{
+    private readonly Timer _heartbeatTimer;
+    private readonly IDeviceStatusReporter _reporter;
+    
+    public HeartbeatService(IDeviceStatusReporter reporter)
+    {
+        _reporter = reporter;
+        _heartbeatTimer = new Timer(
+            async _ => await SendHeartbeatAsync(),
+            null, 
+            TimeSpan.FromSeconds(30), // 首次延迟
+            TimeSpan.FromSeconds(30)  // 间隔
+        );
+    }
+    
+    private async Task SendHeartbeatAsync()
+    {
+        try
+        {
+            var heartbeat = new HeartbeatDto
+            {
+                ClientId = _clientId,
+                Timestamp = DateTime.UtcNow,
+                Sequence = _sequence++,
+                Status = await _statusMonitor.GetCurrentStatusAsync()
+            };
+            
+            await _reporter.ReportHeartbeatAsync(heartbeat);
+            _lastHeartbeatSuccess = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Heartbeat failed");
+            _consecutiveFailures++;
+            
+            if (_consecutiveFailures >= 3)
+            {
+                await _connectionStatusService.SetOfflineAsync();
+            }
+        }
+    }
+}
+```
+
+## 摄像头在线监控
+
+### 摄像头状态检测
+
+#### 1. 海康威视摄像头监控
+```csharp
+// src/MaterialClient.Common/Hikvision/HikvisionCameraMonitor.cs
+public class HikvisionCameraMonitor : ICameraMonitor
+{
+    public async Task<CameraStatusInfo> GetCameraStatusAsync(HikvisionCameraConfig config)
+    {
+        var status = new CameraStatusInfo
+        {
+            CameraId = config.CameraId,
+            CameraName = config.CameraName,
+            CameraType = "Hikvision",
+            IpAddress = config.IpAddress,
+            Port = config.Port
+        };
+        
+        try
+        {
+            // 使用 HCNetSDK 检查摄像头连接状态
+            var deviceId = config.CameraId;
+            var loginResult = CHCNetSDK.NET_DVR_Login_v40(
+                config.IpAddress, 
+                (ushort)config.Port, 
+                config.Username, 
+                config.Password, 
+                out var loginInfo);
+                
+            if (loginResult)
+            {
+                status.IsOnline = true;
+                status.LastCommunication = DateTime.UtcNow;
+                
+                // 获取设备信息
+                var deviceInfo = new CHCNetSDK.NET_DVR_DEVICEINFO_V40();
+                if (CHCNetSDK.NET_DVR_GetDeviceConfig(deviceId, 
+                    CHCNetSDK.NET_DVR_GET_DEVICE_CONFIG, 
+                    ref deviceInfo, 40))
+                {
+                    status.FirmwareVersion = Encoding.ASCII.GetString(deviceInfo.sSoftwareVersion);
+                    status.Manufacturer = "Hikvision";
+                }
+                
+                // 检查视频流状态
+                status.VideoStreamActive = await CheckVideoStreamAsync(config);
+                
+                CHCNetSDK.NET_DVR_Logout((int)deviceId);
+            }
+            else
+            {
+                status.IsOnline = false;
+                status.ErrorMessage = $"Login failed: {CHCNetSDK.NET_DVR_GetLastError()}";
+            }
+        }
+        catch (Exception ex)
+        {
+            status.IsOnline = false;
+            status.ErrorMessage = ex.Message;
+        }
+        
+        return status;
+    }
+}
+```
+
+#### 2. 摄像头服务管理
+```csharp
+// src/MaterialClient.Urban/Services/CameraStatusService.cs
+public class CameraStatusService : ICameraStatusService
+{
+    private readonly Dictionary<string, ICameraMonitor> _cameraMonitors;
+    private readonly IDeviceStatusReporter _reporter;
+    
+    public async Task<Dictionary<string, CameraStatusInfo>> GetAllCameraStatusAsync()
+    {
+        var statusDict = new Dictionary<string, CameraStatusInfo>();
+        
+        foreach (var (cameraId, monitor) in _cameraMonitors)
+        {
+            try
+            {
+                var status = await monitor.GetCameraStatusAsync();
+                statusDict[cameraId] = status;
+            }
+            catch (Exception ex)
+            {
+                statusDict[cameraId] = new CameraStatusInfo
+                {
+                    CameraId = cameraId,
+                    IsOnline = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+        
+        // 批量上报到服务端
+        await _reporter.ReportCameraStatusAsync(statusDict);
+        
+        return statusDict;
+    }
+    
+    // 启动定期摄像头状态检查
+    public async Task StartMonitoringAsync(TimeSpan interval)
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            await GetAllCameraStatusAsync();
+            await Task.Delay(interval, _cts.Token);
+        }
+    }
+}
+```
+
+## 服务端监控界面
+
+### 监控仪表板设计
+
+#### 1. API 端点设计
+```csharp
+// src/UrbanManagement.App/Controllers/MonitoringController.cs
+[ApiController]
+[Route("api/[controller]")]
+public class MonitoringController : ControllerBase
+{
+    private readonly IDeviceStatusService _deviceStatusService;
+    private readonly ICameraStatusService _cameraStatusService;
+    
+    [HttpGet("dashboard")]
+    public async Task<IActionResult> GetDashboardData()
+    {
+        var dashboard = new MonitoringDashboardDto
+        {
+            Summary = await GetSummaryAsync(),
+            ActiveClients = await GetActiveClientsAsync(),
+            CameraStatus = await GetCameraStatusAsync(),
+            RecentAlerts = await GetRecentAlertsAsync(),
+            SystemHealth = await GetSystemHealthAsync()
+        };
+        
+        return Ok(dashboard);
+    }
+    
+    [HttpGet("client-status/{clientId}")]
+    public async Task<IActionResult> GetClientStatus(string clientId)
+    {
+        var status = await _deviceStatusService.GetClientDetailedStatusAsync(clientId);
+        return Ok(status);
+    }
+    
+    [HttpGet("camera-status")]
+    public async Task<IActionResult> GetAllCameraStatus()
+    {
+        var cameraStatus = await _cameraStatusService.GetAllCameraStatusAsync();
+        return Ok(cameraStatus);
+    }
+    
+    [HttpGet("alerts")]
+    public async Task<IActionResult> GetAlerts(
+        DateTime? startTime = null,
+        DateTime? endTime = null,
+        AlertSeverity? severity = null,
+        int page = 1,
+        int pageSize = 20)
+    {
+        var alerts = await _alertService.GetPagedAlertsAsync(
+            startTime, endTime, severity, page, pageSize);
+        return Ok(alerts);
+    }
+}
+```
+
+#### 2. 仪表板数据模型
+```csharp
+// src/UrbanManagement.Core/Dto/MonitoringDashboardDto.cs
+public class MonitoringDashboardDto
+{
+    public SummaryStatistics Summary { get; set; } = new();
+    public List<ClientStatusDto> ActiveClients { get; set; } = new();
+    public List<CameraStatusDto> CameraStatus { get; set; } = new();
+    public List<AlertDto> RecentAlerts { get; set; } = new();
+    public SystemHealthDto SystemHealth { get; set; } = new();
+}
+
+public class SummaryStatistics
+{
+    public int TotalClients { get; set; }
+    public int OnlineClients { get; set; }
+    public int OfflineClients { get; set; }
+    public int TotalCameras { get; set; }
+    public int OnlineCameras { get; set; }
+    public int OfflineCameras { get; set; }
+    public int CriticalAlerts { get; set; }
+    public double ClientOnlineRate => TotalClients > 0 ? (double)OnlineClients / TotalClients * 100 : 0;
+    public double CameraOnlineRate => TotalCameras > 0 ? (double)OnlineCameras / TotalCameras * 100 : 0;
+}
+
+public class SystemHealthDto
+{
+    public double CpuUsage { get; set; }
+    public double MemoryUsage { get; set; }
+    public double DiskUsage { get; set; }
+    public int ActiveConnections { get; set; }
+    public DateTime ServerStartTime { get; set; }
+    public TimeSpan Uptime => DateTime.UtcNow - ServerStartTime;
+}
+```
+
+### 前端监控界面
+
+#### HTML 模板设计
+```html
+<!-- Views/Monitoring/Dashboard.cshtml -->
+<div class="monitoring-dashboard">
+    <!-- 概览卡片 -->
+    <div class="summary-cards">
+        <div class="card">
+            <h3>客户端在线率</h3>
+            <div class="metric">
+                <span class="value">@Model.Summary.ClientOnlineRate.ToString("0.0")%</span>
+                <span class="trend @(Model.Summary.ClientOnlineRate >= 90 ? "positive" : "negative")">
+                    @((Model.Summary.ClientOnlineRate - 90).ToString("+0.0;-0.0")%)
+                </span>
+            </div>
+            <div class="detail">
+                @Model.Summary.OnlineClients / @Model.Summary.TotalClients 在线
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>摄像头在线率</h3>
+            <div class="metric">
+                <span class="value">@Model.Summary.CameraOnlineRate.ToString("0.0")%</span>
+                <span class="trend @(Model.Summary.CameraOnlineRate >= 85 ? "positive" : "negative")">
+                    @((Model.Summary.CameraOnlineRate - 85).ToString("+0.0;-0.0")%)
+                </span>
+            </div>
+            <div class="detail">
+                @Model.Summary.OnlineCameras / @Model.Summary.TotalCameras 在线
+            </div>
+        </div>
+        
+        <div class="card alert-card">
+            <h3>严重告警</h3>
+            <div class="metric alert @(Model.Summary.CriticalAlerts > 0 ? "critical" : "")">
+                @Model.Summary.CriticalAlerts
+            </div>
+            <div class="detail">
+                最近 24 小时
+            </div>
+        </div>
+    </div>
+    
+    <!-- 客户端状态列表 -->
+    <div class="client-status-section">
+        <h2>客户端状态</h2>
+        <table class="status-table">
+            <thead>
+                <tr>
+                    <th>客户端名称</th>
+                    <th>IP 地址</th>
+                    <th>在线状态</th>
+                    <th>最后心跳</th>
+                    <th>CPU 使用率</th>
+                    <th>内存使用率</th>
+                    <th>摄像头状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var client in Model.ActiveClients)
+                {
+                    <tr class="@(client.IsOnline ? "online" : "offline")">
+                        <td>@client.MachineName</td>
+                        <td>@client.IpAddress</td>
+                        <td>
+                            <span class="status-badge @(client.IsOnline ? "online" : "offline")">
+                                @(client.IsOnline ? "在线" : "离线")
+                            </span>
+                        </td>
+                        <td>@client.LastHeartbeat.ToString("MM-dd HH:mm:ss")</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress" style="width: @(client.CpuUsage)%"></div>
+                            </div>
+                            @client.CpuUsage.ToString("0.0")%
+                        </td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress" style="width: @(client.MemoryUsage)%"></div>
+                            </div>
+                            @client.MemoryUsage.ToString("0.0")%
+                        </td>
+                        <td>@client.OnlineCameras / @client.TotalCameras</td>
+                        <td>
+                            <button class="btn-view" onclick="viewClientDetails('@client.ClientId')">
+                                详情
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- 告警列表 -->
+    <div class="alerts-section">
+        <h2>最近告警</h2>
+        <div class="alert-list">
+            @foreach (var alert in Model.RecentAlerts)
+            {
+                <div class="alert-item severity-@alert.Severity.ToString().ToLower()">
+                    <div class="alert-header">
+                        <span class="alert-title">@alert.Title</span>
+                        <span class="alert-time">@alert.CreatedTime.ToString("MM-dd HH:mm:ss")</span>
+                    </div>
+                    <div class="alert-message">@alert.Message</div>
+                    <div class="alert-source">
+                        来源: @alert.SourceClientName (@alert.SourceClientId)
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+```
+
+## 告警机制设计
+
+### 告警规则引擎
+
+```csharp
+// src/UrbanManagement.Core/Services/AlertRuleEngine.cs
+public class AlertRuleEngine : IAlertRuleEngine
+{
+    private readonly List<AlertRule> _rules;
+    
+    public AlertRuleEngine()
+    {
+        // 初始化默认规则
+        _rules = new List<AlertRule>
+        {
+            new AlertRule
+            {
+                Id = "client-offline-15min",
+                Name = "客户端离线超过15分钟",
+                Severity = AlertSeverity.High,
+                Condition = status => status.TimeSinceLastHeartbeat > TimeSpan.FromMinutes(15),
+                MessageGenerator = status => $"客户端 {status.ClientId} 已离线超过15分钟"
+            },
+            new AlertRule
+            {
+                Id = "camera-offline-5min",
+                Name = "摄像头离线超过5分钟",
+                Severity = AlertSeverity.Medium,
+                Condition = status => status.CameraStatus.Any(c => !c.IsOnline && c.TimeSinceLastCommunication > TimeSpan.FromMinutes(5)),
+                MessageGenerator = status => $"客户端 {status.ClientId} 有 {status.CameraStatus.Count(c => !c.IsOnline)} 个摄像头离线"
+            },
+            new AlertRule
+            {
+                Id = "cpu-usage-high",
+                Name = "CPU 使用率过高",
+                Severity = AlertSeverity.Medium,
+                Condition = status => status.CpuUsage > 90,
+                MessageGenerator = status => $"客户端 {status.ClientId} CPU 使用率达到 {status.CpuUsage}%"
+            },
+            new AlertRule
+            {
+                Id = "memory-usage-high",
+                Name = "内存使用率过高",
+                Severity = AlertSeverity.Medium,
+                Condition = status => status.MemoryUsage > 85,
+                MessageGenerator = status => $"客户端 {status.ClientId} 内存使用率达到 {status.MemoryUsage}%"
+            }
+        };
+    }
+    
+    public async Task<List<Alert>> EvaluateRulesAsync(DeviceStatusDto status)
+    {
+        var alerts = new List<Alert>();
+        
+        foreach (var rule in _rules)
+        {
+            try
+            {
+                if (rule.Condition(status))
+                {
+                    var alert = new Alert
+                    {
+                        Id = Guid.NewGuid(),
+                        RuleId = rule.Id,
+                        Title = rule.Name,
+                        Message = rule.MessageGenerator(status),
+                        Severity = rule.Severity,
+                        SourceClientId = status.ClientId,
+                        SourceClientName = status.MachineName,
+                        CreatedTime = DateTime.UtcNow,
+                        Status = AlertStatus.Active,
+                        AlertData = JsonSerializer.Serialize(status)
+                    };
+                    
+                    alerts.Add(alert);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to evaluate alert rule {RuleId}", rule.Id);
+            }
+        }
+        
+        return alerts;
+    }
+}
+```
+
+### 告警通知服务
+
+```csharp
+// src/UrbanManagement.Core/Services/AlertNotificationService.cs
+public class AlertNotificationService : IAlertNotificationService
+{
+    private readonly IEmailService _emailService;
+    private readonly ISmsService _smsService;
+    private readonly IWebSocketService _webSocketService;
+    
+    public async Task SendAlertAsync(Alert alert)
+    {
+        // 实时推送到监控界面
+        await _webSocketService.BroadcastAlertAsync(alert);
+        
+        // 根据严重程度发送通知
+        switch (alert.Severity)
+        {
+            case AlertSeverity.Critical:
+                await SendCriticalAlertAsync(alert);
+                break;
+            case AlertSeverity.High:
+                await SendHighSeverityAlertAsync(alert);
+                break;
+            case AlertSeverity.Medium:
+                await SendMediumSeverityAlertAsync(alert);
+                break;
+            case AlertSeverity.Low:
+                await SendLowSeverityAlertAsync(alert);
+                break;
+        }
+    }
+    
+    private async Task SendCriticalAlertAsync(Alert alert)
+    {
+        // 立即发送短信和邮件
+        await _smsService.SendAsync(
+            GetOnCallAdministrators(),
+            $"【紧急告警】{alert.Title} - {alert.Message}");
+            
+        await _emailService.SendAsync(
+            GetAdministratorsEmails(),
+            $"【紧急告警】{alert.Title}",
+            GenerateAlertEmailContent(alert));
+    }
+}
+```
+
+## 性能优化
+
+### 状态数据缓存策略
+
+```csharp
+// src/UrbanManagement.Core/Services/DeviceStatusCacheService.cs
+public class DeviceStatusCacheService : IDeviceStatusCacheService
+{
+    private readonly IMemoryCache _cache;
+    private readonly IDbContext _dbContext;
+    
+    public async Task<DeviceStatusDto?> GetCachedStatusAsync(string clientId)
+    {
+        var cacheKey = $"device_status:{clientId}";
+        
+        if (_cache.TryGetValue(cacheKey, out DeviceStatusDto? cachedStatus))
+        {
+            return cachedStatus;
+        }
+        
+        // 从数据库查询
+        var status = await _dbContext.DeviceStatus
+            .FirstOrDefaultAsync(s => s.ClientId == clientId);
+            
+        if (status != null)
+        {
+            var statusDto = MapToDto(status);
+            _cache.Set(cacheKey, statusDto, TimeSpan.FromMinutes(5));
+            return statusDto;
+        }
+        
+        return null;
+    }
+    
+    public async Task UpdateCachedStatusAsync(DeviceStatusDto status)
+    {
+        var cacheKey = $"device_status:{status.ClientId}";
+        _cache.Set(cacheKey, status, TimeSpan.FromMinutes(5));
+        
+        // 异步更新数据库
+        _ = Task.Run(async () => 
+        {
+            await _dbContext.DeviceStatus.UpsertAsync(status);
+        });
+    }
+}
+```
+
+### 批量查询优化
+
+```csharp
+// src/UrbanManagement.Core/Services/DeviceStatusQueryService.cs
+public class DeviceStatusQueryService : IDeviceStatusQueryService
+{
+    public async Task<DeviceStatusSummaryDto> GetStatusSummaryAsync()
+    {
+        var cacheKey = "device_status_summary";
+        
+        if (_cache.TryGetValue(cacheKey, out DeviceStatusSummaryDto? cachedSummary))
+        {
+            return cachedSummary;
+        }
+        
+        // 使用单次查询获取汇总数据
+        var summary = await _dbContext.DeviceStatus
+            .GroupBy(s => s.IsOnline)
+            .Select(g => new { IsOnline = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.IsOnline, g => g.Count);
+            
+        var summaryDto = new DeviceStatusSummaryDto
+        {
+            TotalClients = summary.Values.Sum(),
+            OnlineClients = summary.GetValueOrDefault(true, 0),
+            OfflineClients = summary.GetValueOrDefault(false, 0),
+            LastUpdated = DateTime.UtcNow
+        };
+        
+        _cache.Set(cacheKey, summaryDto, TimeSpan.FromMinutes(1));
+        return summaryDto;
+    }
+}
+```
+
+---
+
+**下一步**: 参考 [错误日志方案](./04-error-logging-solution.md) 了解错误日志收集和提交的具体实现。

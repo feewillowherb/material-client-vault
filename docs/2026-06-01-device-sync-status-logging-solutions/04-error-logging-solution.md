@@ -1,0 +1,901 @@
+# 错误日志方案
+
+## 方案概述
+
+本方案设计 MaterialClient.Urban 错误日志收集、传输和存储的完整解决方案，实现本地日志到服务端的集中管理和分析。
+
+## 现状分析
+
+### 当前日志机制
+- **本地存储**: Serilog 记录到本地文件系统
+- **日志级别**: Information、Warning、Error
+- **存储位置**: `Logs/log-{Date}.txt`
+- **保留策略**: 30天自动清理
+- **传输方式**: 无远程传输机制
+
+### 现有问题
+- ⚠️ **信息孤岛**: 错误日志仅存在于客户端本地
+- ⚠️ **运维困难**: 需要远程桌面才能查看日志
+- ⚠️ **分析缺失**: 无法进行集中分析和趋势预测
+- ⚠️ **告警缺失**: 关键错误无法及时通知管理员
+- ⚠️ **容量限制**: 本地磁盘空间有限
+
+## 解决方案设计
+
+### 方案一：实时日志推送（推荐）
+
+#### 架构设计
+```
+MaterialClient.Urban                     UrbanManagement
+┌─────────────────┐                      ┌──────────────────────┐
+│ ErrorLogging    │◄──── WebSocket ──────┤│ ErrorLogSink        │
+│ Service         │      实时推送         ││                      │
+│                 │                      ││ - ReceiveLog()       │
+│ ┌─────────────┐ │                      ││ - StoreLog()         │
+│ │ Log Capture │─┤                     ││ - AnalyzeLog()       │
+│ │ Pipeline    │ │                      ││ - TriggerAlert()     │
+│ └─────────────┘ │                      │└──────────────────────┘
+│                 │                               │
+│ ┌─────────────┐ │                      ┌──────────────────────────┐
+│ │ Error Buffer│ │                      ││ ErrorLogAnalysisService │
+│ └─────────────┘ │                      ││ - PatternDetection      │
+└─────────────────┘                      ││ - TrendAnalysis         │
+                                          ││ - RootCauseAnalysis     │
+                                          │└──────────────────────────┘
+```
+
+#### 实施步骤
+
+**1. 客户端日志捕获服务**
+
+```csharp
+// src/MaterialClient.Urban/Services/ErrorLogCaptureService.cs
+public class ErrorLogCaptureService : IErrorLogCaptureService
+{
+    private readonly ILogger<ErrorLogCaptureService> _logger;
+    private readonly IErrorLogTransmitter _transmitter;
+    private readonly ConcurrentQueue<ErrorLogEntry> _logQueue;
+    private readonly SemaphoreSlim _transmissionSemaphore;
+    
+    public ErrorLogCaptureService(IErrorLogTransmitter transmitter)
+    {
+        _transmitter = transmitter;
+        _logQueue = new ConcurrentQueue<ErrorLogEntry>();
+        _transmissionSemaphore = new SemaphoreSlim(1, 1);
+        
+        // 启动后台传输任务
+        Task.Run(async () => await ProcessLogQueueAsync());
+    }
+    
+    public void CaptureError(Exception exception, ErrorContext context)
+    {
+        var logEntry = new ErrorLogEntry
+        {
+            Id = Guid.NewGuid(),
+            Timestamp = DateTime.UtcNow,
+            Level = LogLevel.Error,
+            Message = exception.Message,
+            StackTrace = exception.StackTrace,
+            Source = context.Source,
+            ClientId = context.ClientId,
+            MachineName = Environment.MachineName,
+            AppVersion = context.AppVersion,
+            AdditionalData = context.AdditionalData
+        };
+        
+        _logQueue.Enqueue(logEntry);
+        
+        // 严重错误立即发送
+        if (IsCriticalError(exception))
+        {
+            _ = Task.Run(async () => await TransmitCriticalErrorAsync(logEntry));
+        }
+    }
+    
+    private async Task ProcessLogQueueAsync()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                if (_logQueue.TryDequeue(out var logEntry))
+                {
+                    await _transmitter.TransmitAsync(logEntry);
+                }
+                else
+                {
+                    // 队列为空，等待一段时间
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), _cts.Token);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process log queue");
+                await Task.Delay(TimeSpan.FromSeconds(5), _cts.Token);
+            }
+        }
+    }
+    
+    private async Task TransmitCriticalErrorAsync(ErrorLogEntry logEntry)
+    {
+        await _transmissionSemaphore.WaitAsync(_cts.Token);
+        try
+        {
+            await _transmitter.TransmitCriticalAsync(logEntry);
+        }
+        finally
+        {
+            _transmissionSemaphore.Release();
+        }
+    }
+}
+```
+
+**2. 日志传输服务**
+
+```csharp
+// src/MaterialClient.Urban/Services/ErrorLogTransmitter.cs
+public class ErrorLogTransmitter : IErrorLogTransmitter
+{
+    private readonly HttpClient _httpClient;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<ErrorLogTransmitter> _logger;
+    
+    public async Task TransmitAsync(ErrorLogEntry logEntry)
+    {
+        try
+        {
+            var serverUrl = _configuration["UrbanManagement:ServerUrl"];
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{serverUrl}/api/error-logs", 
+                logEntry);
+                
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("Error log transmitted successfully: {LogId}", logEntry.Id);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to transmit error log: {StatusCode}", 
+                    response.StatusCode);
+                await HandleTransmissionFailureAsync(logEntry);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to transmit error log");
+            await HandleTransmissionFailureAsync(logEntry);
+        }
+    }
+    
+    public async Task TransmitCriticalAsync(ErrorLogEntry logEntry)
+    {
+        // 严重错误使用更高优先级的端点
+        try
+        {
+            var serverUrl = _configuration["UrbanManagement:ServerUrl"];
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{serverUrl}/api/error-logs/critical", 
+                logEntry);
+                
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Failed to transmit critical error log: {StatusCode}", 
+                    response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to transmit critical error log");
+        }
+    }
+    
+    private async Task HandleTransmissionFailureAsync(ErrorLogEntry logEntry)
+    {
+        // 存储到本地数据库以便后续重传
+        await _localErrorLogService.StoreFailedTransmissionAsync(logEntry);
+    }
+}
+```
+
+**3. 服务端日志接收服务**
+
+```csharp
+// src/UrbanManagement.Core/Services/ErrorLogIngestionService.cs
+public class ErrorLogIngestionService : IErrorLogIngestionService
+{
+    private readonly IRepository<ErrorLog, Guid> _errorLogRepository;
+    private readonly IErrorAnalysisService _analysisService;
+    private readonly IAlertService _alertService;
+    private readonly ILogger<ErrorLogIngestionService> _logger;
+    
+    public async Task<ErrorLogIngestionResult> IngestAsync(ErrorLogEntry logEntry)
+    {
+        try
+        {
+            // 1. 存储原始日志
+            var errorLog = new ErrorLog
+            {
+                Id = logEntry.Id,
+                Timestamp = logEntry.Timestamp,
+                Level = logEntry.Level,
+                Message = logEntry.Message,
+                StackTrace = logEntry.StackTrace,
+                Source = logEntry.Source,
+                ClientId = logEntry.ClientId,
+                MachineName = logEntry.MachineName,
+                AppVersion = logEntry.AppVersion,
+                AdditionalData = logEntry.AdditionalData,
+                IsProcessed = false
+            };
+            
+            await _errorLogRepository.InsertAsync(errorLog, autoSave: true);
+            
+            // 2. 异步分析和处理
+            _ = Task.Run(async () => await ProcessErrorLogAsync(errorLog));
+            
+            return new ErrorLogIngestionResult { Success = true, LogId = errorLog.Id };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to ingest error log");
+            return new ErrorLogIngestionResult { Success = false, ErrorMessage = ex.Message };
+        }
+    }
+    
+    private async Task ProcessErrorLogAsync(ErrorLog errorLog)
+    {
+        try
+        {
+            // 1. 分析错误模式
+            var analysis = await _analysisService.AnalyzeAsync(errorLog);
+            
+            // 2. 更新错误分析结果
+            errorLog.ErrorPattern = analysis.Pattern;
+            errorLog.ErrorCategory = analysis.Category;
+            errorLog.Severity = analysis.Severity;
+            errorLog.IsProcessed = true;
+            await _errorLogRepository.UpdateAsync(errorLog);
+            
+            // 3. 触发告警（如果需要）
+            if (analysis.ShouldTriggerAlert)
+            {
+                await _alertService.TriggerErrorAlertAsync(errorLog, analysis);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process error log {LogId}", errorLog.Id);
+        }
+    }
+}
+```
+
+**4. API 控制器**
+
+```csharp
+// src/UrbanManagement.App/Controllers/ErrorLogsController.cs
+[ApiController]
+[Route("api/[controller]")]
+public class ErrorLogsController : AbpController
+{
+    private readonly IErrorLogIngestionService _ingestionService;
+    private readonly IErrorLogQueryService _queryService;
+    
+    [HttpPost]
+    public async Task<IActionResult> ReceiveErrorLog([FromBody] ErrorLogEntry logEntry)
+    {
+        var result = await _ingestionService.IngestAsync(logEntry);
+        
+        if (result.Success)
+        {
+            return Ok(new { success = true, logId = result.LogId });
+        }
+        else
+        {
+            return BadRequest(new { success = false, message = result.ErrorMessage });
+        }
+    }
+    
+    [HttpPost("critical")]
+    public async Task<IActionResult> ReceiveCriticalErrorLog([FromBody] ErrorLogEntry logEntry)
+    {
+        // 严重错误优先处理
+        var result = await _ingestionService.IngestCriticalAsync(logEntry);
+        
+        if (result.Success)
+        {
+            return Ok(new { success = true, logId = result.LogId, priority = "high" });
+        }
+        else
+        {
+            return BadRequest(new { success = false, message = result.ErrorMessage });
+        }
+    }
+    
+    [HttpGet]
+    public async Task<IActionResult> QueryErrorLogs(
+        DateTime? startTime = null,
+        DateTime? endTime = null,
+        string? clientId = null,
+        string? level = null,
+        int page = 1,
+        int pageSize = 20)
+    {
+        var logs = await _queryService.GetPagedErrorLogsAsync(
+            startTime, endTime, clientId, level, page, pageSize);
+        return Ok(logs);
+    }
+}
+```
+
+### 方案二：批量日志上传（备选）
+
+#### 实施设计
+
+**1. 客户端日志收集器**
+
+```csharp
+// src/MaterialClient.Urban/Services/BatchErrorLogCollector.cs
+public class BatchErrorLogCollector : IBatchErrorLogCollector
+{
+    private readonly List<ErrorLogEntry> _buffer;
+    private readonly Timer _uploadTimer;
+    private readonly int _maxBufferSize = 100;
+    private readonly TimeSpan _uploadInterval = TimeSpan.FromMinutes(5);
+    
+    public BatchErrorLogCollector()
+    {
+        _buffer = new List<ErrorLogEntry>();
+        _uploadTimer = new Timer(
+            async _ => await UploadBufferAsync(),
+            null,
+            _uploadInterval,
+            _uploadInterval);
+    }
+    
+    public void AddErrorLog(ErrorLogEntry logEntry)
+    {
+        lock (_buffer)
+        {
+            _buffer.Add(logEntry);
+            
+            // 达到阈值立即上传
+            if (_buffer.Count >= _maxBufferSize)
+            {
+                _ = Task.Run(async () => await UploadBufferAsync());
+            }
+        }
+    }
+    
+    private async Task UploadBufferAsync()
+    {
+        List<ErrorLogEntry> logsToUpload;
+        
+        lock (_buffer)
+        {
+            if (_buffer.Count == 0) return;
+            
+            logsToUpload = _buffer.ToList();
+            _buffer.Clear();
+        }
+        
+        try
+        {
+            var batch = new ErrorLogBatch
+            {
+                BatchId = Guid.NewGuid(),
+                ClientId = _clientId,
+                UploadTime = DateTime.UtcNow,
+                ErrorLogs = logsToUpload
+            };
+            
+            await _httpClient.PostAsJsonAsync(
+                $"{_serverUrl}/api/error-logs/batch",
+                batch);
+        }
+        catch (Exception ex)
+        {
+            // 上传失败，重新加入缓冲区
+            lock (_buffer)
+            {
+                _buffer.AddRange(logsToUpload);
+            }
+            
+            _logger.LogError(ex, "Failed to upload error log batch");
+        }
+    }
+}
+```
+
+**2. 服务端批量处理**
+
+```csharp
+// src/UrbanManagement.Core/Services/BatchErrorLogProcessor.cs
+public class BatchErrorLogProcessor : IBatchErrorLogProcessor
+{
+    private readonly IErrorLogIngestionService _ingestionService;
+    private readonly ILogger<BatchErrorLogProcessor> _logger;
+    
+    public async Task<BatchProcessResult> ProcessBatchAsync(ErrorLogBatch batch)
+    {
+        var results = new List<ErrorLogIngestionResult>();
+        var successCount = 0;
+        var failureCount = 0;
+        
+        foreach (var logEntry in batch.ErrorLogs)
+        {
+            try
+            {
+                var result = await _ingestionService.IngestAsync(logEntry);
+                results.Add(result);
+                
+                if (result.Success)
+                    successCount++;
+                else
+                    failureCount++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process log entry {LogId}", logEntry.Id);
+                failureCount++;
+            }
+        }
+        
+        return new BatchProcessResult
+        {
+            BatchId = batch.BatchId,
+            TotalCount = batch.ErrorLogs.Count,
+            SuccessCount = successCount,
+            FailureCount = failureCount,
+            Results = results
+        };
+    }
+}
+```
+
+## 错误日志分析
+
+### 自动错误分类
+
+```csharp
+// src/UrbanManagement.Core/Services/ErrorAnalysisService.cs
+public class ErrorAnalysisService : IErrorAnalysisService
+{
+    private readonly Dictionary<string, ErrorPattern> _knownPatterns;
+    
+    public ErrorAnalysisService()
+    {
+        // 初始化已知错误模式
+        _knownPatterns = new Dictionary<string, ErrorPattern>
+        {
+            ["database-connection-error"] = new ErrorPattern
+            {
+                Pattern = "database.*connection.*error",
+                Category = ErrorCategory.Infrastructure,
+                Severity = ErrorSeverity.High,
+                SuggestedAction = "检查数据库连接字符串和网络连接"
+            },
+            ["camera-offline-error"] = new ErrorPattern
+            {
+                Pattern = "camera.*offline|connection.*lost.*camera",
+                Category = ErrorCategory.Hardware,
+                Severity = ErrorSeverity.Medium,
+                SuggestedAction = "检查摄像头电源和网络连接"
+            },
+            ["authentication-error"] = new ErrorPattern
+            {
+                Pattern = "authentication.*failed|unauthorized.*access",
+                Category = ErrorCategory.Security,
+                Severity = ErrorSeverity.High,
+                SuggestedAction = "检查认证凭证和权限设置"
+            }
+        };
+    }
+    
+    public async Task<ErrorAnalysisResult> AnalyzeAsync(ErrorLog errorLog)
+    {
+        var result = new ErrorAnalysisResult();
+        
+        // 1. 模式匹配
+        foreach (var (patternId, pattern) in _knownPatterns)
+        {
+            if (Regex.IsMatch(errorLog.Message, pattern.Pattern, RegexOptions.IgnoreCase))
+            {
+                result.Pattern = patternId;
+                result.Category = pattern.Category;
+                result.Severity = pattern.Severity;
+                result.SuggestedAction = pattern.SuggestedAction;
+                break;
+            }
+        }
+        
+        // 2. 如果没有匹配的模式，使用默认分析
+        if (result.Pattern == null)
+        {
+            result = await AnalyzeUnknownErrorAsync(errorLog);
+        }
+        
+        // 3. 判断是否需要告警
+        result.ShouldTriggerAlert = result.Severity >= ErrorSeverity.High;
+        
+        return result;
+    }
+    
+    private async Task<ErrorAnalysisResult> AnalyzeUnknownErrorAsync(ErrorLog errorLog)
+    {
+        // 使用机器学习模型或其他分析方法
+        // 这里简化为基于关键字的启发式分析
+        var result = new ErrorAnalysisResult
+        {
+            Pattern = "unknown",
+            Category = ErrorCategory.Application,
+            Severity = ErrorSeverity.Medium
+        };
+        
+        // 检查关键错误指示词
+        if (errorLog.Message.Contains("critical", StringComparison.OrdinalIgnoreCase) ||
+            errorLog.Message.Contains("fatal", StringComparison.OrdinalIgnoreCase))
+        {
+            result.Severity = ErrorSeverity.Critical;
+            result.ShouldTriggerAlert = true;
+        }
+        
+        return result;
+    }
+}
+```
+
+### 错误趋势分析
+
+```csharp
+// src/UrbanManagement.Core/Services/ErrorTrendAnalysisService.cs
+public class ErrorTrendAnalysisService : IErrorTrendAnalysisService
+{
+    private readonly IRepository<ErrorLog, Guid> _errorLogRepository;
+    
+    public async Task<ErrorTrendReport> GenerateTrendReportAsync(
+        DateTime startTime,
+        DateTime endTime,
+        TrendGranularity granularity)
+    {
+        var errorLogs = await _errorLogRepository.GetListAsync(
+            e => e.Timestamp >= startTime && e.Timestamp <= endTime);
+        
+        var report = new ErrorTrendReport
+        {
+            StartTime = startTime,
+            EndTime = endTime,
+            TotalErrors = errorLogs.Count,
+            Granularity = granularity
+        };
+        
+        // 按时间段分组统计
+        var groupedLogs = granularity switch
+        {
+            TrendGranularity.Hourly => errorLogs
+                .GroupBy(e => e.Timestamp.Hour)
+                .ToDictionary(g => g.Key, g => g.Count()),
+            TrendGranularity.Daily => errorLogs
+                .GroupBy(e => e.Timestamp.Date)
+                .ToDictionary(g => g.Key, g => g.Count()),
+            _ => errorLogs
+                .GroupBy(e => e.Timestamp.Date)
+                .ToDictionary(g => g.Key, g => g.Count())
+        };
+        
+        report.TimeSeriesData = groupedLogs;
+        
+        // 计算趋势
+        report.Trend = CalculateTrend(groupedLogs.Values.ToList());
+        
+        // 错误类别分布
+        report.CategoryDistribution = errorLogs
+            .GroupBy(e => e.ErrorCategory ?? ErrorCategory.Application)
+            .ToDictionary(g => g.Key.ToString(), g => g.Count());
+        
+        // 最常见的错误
+        report.TopErrors = errorLogs
+            .GroupBy(e => e.Message)
+            .OrderByDescending(g => g.Count())
+            .Take(10)
+            .Select(g => new TopError
+            {
+                Message = g.Key,
+                Count = g.Count(),
+                Percentage = (double)g.Count() / errorLogs.Count * 100
+            })
+            .ToList();
+        
+        return report;
+    }
+    
+    private TrendDirection CalculateTrend(List<int> values)
+    {
+        if (values.Count < 2) return TrendDirection.Stable;
+        
+        var recent = values.Skip(values.Count / 2).Average();
+        var earlier = values.Take(values.Count / 2).Average();
+        
+        if (recent > earlier * 1.2) return TrendDirection.Increasing;
+        if (recent < earlier * 0.8) return TrendDirection.Decreasing;
+        return TrendDirection.Stable;
+    }
+}
+```
+
+## 数据存储设计
+
+### 错误日志数据模型
+
+```csharp
+// src/UrbanManagement.Core/Entities/ErrorLog.cs
+public class ErrorLog : Entity<Guid>
+{
+    public DateTime Timestamp { get; set; }
+    public LogLevel Level { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public string? StackTrace { get; set; }
+    public string? Source { get; set; }
+    public string ClientId { get; set; } = string.Empty;
+    public string MachineName { get; set; } = string.Empty;
+    public string? AppVersion { get; set; }
+    public string? AdditionalData { get; set; }
+    
+    // 分析字段
+    public string? ErrorPattern { get; set; }
+    public ErrorCategory? ErrorCategory { get; set; }
+    public ErrorSeverity? Severity { get; set; }
+    public bool IsProcessed { get; set; }
+    public DateTime? ProcessedTime { get; set; }
+    
+    // 索引字段
+    public DateTime CreatedTime { get; set; }
+    public DateTime? LastModifiedTime { get; set; }
+}
+
+// 枚举定义
+public enum LogLevel
+{
+    Trace,
+    Debug,
+    Information,
+    Warning,
+    Error,
+    Critical,
+    None
+}
+
+public enum ErrorCategory
+{
+    Application,
+    Infrastructure,
+    Hardware,
+    Security,
+    Network,
+    Database,
+    FileSystem,
+    Unknown
+}
+
+public enum ErrorSeverity
+{
+    Low,
+    Medium,
+    High,
+    Critical
+}
+
+public enum TrendGranularity
+{
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly
+}
+
+public enum TrendDirection
+{
+    Increasing,
+    Decreasing,
+    Stable
+}
+```
+
+### 数据库优化
+
+```sql
+-- 创建索引优化查询性能
+CREATE INDEX IX_ErrorLogs_Timestamp ON ErrorLogs(Timestamp DESC);
+CREATE INDEX IX_ErrorLogs_ClientId ON ErrorLogs(ClientId);
+CREATE INDEX IX_ErrorLogs_Level ON ErrorLogs(Level);
+CREATE INDEX IX_ErrorLogs_ErrorCategory ON ErrorLogs(ErrorCategory);
+CREATE INDEX IX_ErrorLogs_IsProcessed ON ErrorLogs(IsProcessed);
+
+-- 创建复合索引
+CREATE INDEX IX_ErrorLogs_ClientId_Timestamp ON ErrorLogs(ClientId, Timestamp DESC);
+CREATE INDEX IX_ErrorLogs_Level_Timestamp ON ErrorLogs(Level, Timestamp DESC);
+
+-- 分区表（如果使用 SQL Server 或其他支持分区的数据库）
+-- 按月分区，便于数据清理和归档
+```
+
+## 监控和告警
+
+### 错误监控仪表板
+
+```csharp
+// src/UrbanManagement.Core/Dto/ErrorMonitoringDashboardDto.cs
+public class ErrorMonitoringDashboardDto
+{
+    public ErrorSummary Summary { get; set; } = new();
+    public List<RecentErrorDto> RecentErrors { get; set; } = new();
+    public ErrorTrendDto Trend { get; set; } = new();
+    public List<ErrorClusterDto> ErrorClusters { get; set; } = new();
+    public List<ClientErrorStatsDto> ClientStats { get; set; } = new();
+}
+
+public class ErrorSummary
+{
+    public int TotalErrors { get; set; }
+    public int CriticalErrors { get; set; }
+    public int HighSeverityErrors { get; set; }
+    public int UnprocessedErrors { get; set; }
+    public double ErrorRate { get; set; } // 错误率（每小时）
+}
+
+public class ErrorTrendDto
+{
+    public List<TimeSeriesPoint> TimeSeries { get; set; } = new();
+    public TrendDirection Trend { get; set; }
+    public double AverageHourlyErrors { get; set; }
+}
+```
+
+### 前端监控界面
+
+```html
+<!-- Views/ErrorMonitoring/Dashboard.cshtml -->
+<div class="error-monitoring-dashboard">
+    <!-- 概览卡片 -->
+    <div class="summary-cards">
+        <div class="card critical">
+            <h3>严重错误</h3>
+            <div class="metric">@Model.Summary.CriticalErrors</div>
+            <div class="trend">过去 24 小时</div>
+        </div>
+        
+        <div class="card">
+            <h3>错误率</h3>
+            <div class="metric">@Model.Summary.ErrorRate.ToString("0.0")/小时</div>
+            <div class="trend @(Model.Trend.Trend == TrendDirection.Increasing ? "up" : "down")">
+                @(Model.Trend.Trend == TrendDirection.Increasing ? "↑ 上升" : "↓ 下降")
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>未处理错误</h3>
+            <div class="metric">@Model.Summary.UnprocessedErrors</div>
+            <div class="trend">需要处理</div>
+        </div>
+    </div>
+    
+    <!-- 错误趋势图 -->
+    <div class="error-trend-section">
+        <h2>错误趋势</h2>
+        <canvas id="errorTrendChart"></canvas>
+    </div>
+    
+    <!-- 最近错误列表 -->
+    <div class="recent-errors-section">
+        <h2>最近错误</h2>
+        <div class="error-list">
+            @foreach (var error in Model.RecentErrors)
+            {
+                <div class="error-item severity-@error.Severity.ToString().ToLower()">
+                    <div class="error-header">
+                        <span class="error-time">@error.Timestamp.ToString("MM-dd HH:mm:ss")</span>
+                        <span class="error-client">@error.ClientName</span>
+                        <span class="error-category">@error.Category</span>
+                    </div>
+                    <div class="error-message">@error.Message</div>
+                    @if (!string.IsNullOrEmpty(error.SuggestedAction))
+                    {
+                        <div class="suggested-action">
+                            建议: @error.SuggestedAction
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+</div>
+```
+
+## 性能和存储优化
+
+### 日志压缩存储
+
+```csharp
+// src/UrbanManagement.Core/Services/ErrorLogCompressionService.cs
+public class ErrorLogCompressionService : IErrorLogCompressionService
+{
+    public async Task CompressOldLogsAsync(DateTime cutoffDate)
+    {
+        var oldLogs = await _errorLogRepository.GetListAsync(
+            e => e.Timestamp < cutoffDate && !e.IsCompressed);
+        
+        foreach (var log in oldLogs)
+        {
+            // 压缩堆栈跟踪和附加数据
+            if (!string.IsNullOrEmpty(log.StackTrace))
+            {
+                log.StackTrace = CompressString(log.StackTrace);
+            }
+            
+            if (!string.IsNullOrEmpty(log.AdditionalData))
+            {
+                log.AdditionalData = CompressString(log.AdditionalData);
+            }
+            
+            log.IsCompressed = true;
+            await _errorLogRepository.UpdateAsync(log);
+        }
+    }
+    
+    private string CompressString(string input)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionMode.Compress))
+        using (var writer = new StreamWriter(gzip))
+        {
+            writer.Write(input);
+        }
+        
+        return Convert.ToBase64String(output.ToArray());
+    }
+}
+```
+
+### 日志归档策略
+
+```csharp
+// src/UrbanManagement.Core/Services/ErrorLogArchiveService.cs
+public class ErrorLogArchiveService : IErrorLogArchiveService
+{
+    public async Task ArchiveLogsAsync(DateTime archiveBeforeDate)
+    {
+        var logsToArchive = await _errorLogRepository.GetListAsync(
+            e => e.Timestamp < archiveBeforeDate);
+        
+        // 导出为 JSON 文件
+        var archiveData = new ErrorLogArchive
+        {
+            ArchiveDate = DateTime.UtcNow,
+            LogsCount = logsToArchive.Count,
+            Logs = logsToArchive.Select(MapToArchiveDto).ToList()
+        };
+        
+        var json = JsonSerializer.Serialize(archiveData, new JsonSerializerOptions 
+        { 
+            WriteIndented = false 
+        });
+        
+        // 存储到文件系统或对象存储
+        var archiveFileName = $"error_logs_{archiveBeforeDate:yyyyMMdd}.json.gz";
+        var compressedData = CompressData(json);
+        
+        await _storageService.UploadAsync(archiveFileName, compressedData);
+        
+        // 删除已归档的日志
+        await _errorLogRepository.DeleteManyAsync(logsToArchive);
+        
+        _logger.LogInformation("Archived {Count} error logs to {ArchiveFile}", 
+            logsToArchive.Count, archiveFileName);
+    }
+}
+```
+
+---
+
+**下一步**: 参考 [实施建议](./05-implementation-recommendations.md) 了解具体的实施步骤和注意事项。
