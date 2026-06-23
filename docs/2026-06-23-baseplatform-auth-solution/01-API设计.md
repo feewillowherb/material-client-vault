@@ -305,10 +305,11 @@ public class AuthTokenGenerator
 ```json
 {
   "code": "ONE-TIME-AUTH-CODE",
-  "machineCode": "MACHINE-CODE-12345",
-  "proId": "project-guid"
+  "machineCode": "MACHINE-CODE-12345"
 }
 ```
+
+> **说明**：客户端在激活时只知道授权码和机器码，不知道 ProId。ProId 是服务器端根据授权码匹配后返回的。
 
 **响应**：
 

@@ -243,7 +243,8 @@ T1: 用户在 MaterialClient.Urban 输入授权码 "AUTH-123456"
 
 T2: MaterialClient.Urban 获取机器码 "MACHINE-ABC-123"
     → POST /api/urban/auth/activate-proxy
-    → Body: { code: "AUTH-123456", machineCode: "MACHINE-ABC-123", proId: "..." }
+    → Body: { code: "AUTH-123456", machineCode: "MACHINE-ABC-123" }
+    → 注意：客户端此时不知道 ProId，ProId 在响应中返回
 
 T3: UrbanManagement 收到请求，转发到 BasePlatform
     → POST /api/auth/activate
@@ -329,9 +330,12 @@ public class UrbanAuthProxyController : AbpController
             return ApiResultDto<ActivationResultDto>.Fail(basePlatformResponse.Message);
         }
 
-        // 2. 更新本地 GovProject
+        // 2. 从 BasePlatform 响应中获取 ProId
+        var proId = basePlatformResponse.Data.ProId;
+
+        // 3. 更新本地 GovProject（根据 BasePlatform 返回的 ProId）
         var project = await _projectRepository.FirstOrDefaultAsync(
-            p => p.ProId == request.ProId);
+            p => p.ProId == proId);
 
         if (project != null)
         {
@@ -500,15 +504,14 @@ public class UrbanAuthService
     /// <summary>
     /// 在线激活
     /// </summary>
-    public async Task<bool> ActivateOnline(string authCode, string proId)
+    public async Task<bool> ActivateOnline(string authCode)
     {
         var machineCode = MachineCodeProvider.GetMachineCode();
 
         var response = await _urbanApi.ActivateProxy(new ActivateProxyRequest
         {
             Code = authCode,
-            MachineCode = machineCode,
-            ProId = proId
+            MachineCode = machineCode
         });
 
         if (!response.Success)
@@ -518,7 +521,8 @@ public class UrbanAuthService
             return false;
         }
 
-        // 仅保存 ProId 到本地 SQLite（不保存 AuthToken）
+        // 从响应中获取 ProId 并保存到本地
+        var proId = response.Data.ProId;
         var existing = await _db.UrbanAuths.FirstOrDefaultAsync();
         if (existing != null)
         {
