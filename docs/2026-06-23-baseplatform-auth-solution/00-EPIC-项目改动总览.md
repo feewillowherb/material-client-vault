@@ -11,6 +11,8 @@
 - UrbanManagement 作为代理层处理授权验证
 - MaterialClient.Urban 保持现有 LicenseInfo 结构和 JWT 验证机制
 - BasePlatform.PublicApi 提供授权验证能力
+- **将 UrbanManagement 中的 JWT 授权文件签发流程移植到 BasePlatform**
+- **在 BasePlatform 中提供授权文件下载功能**
 
 ---
 
@@ -58,7 +60,99 @@
   }
   ```
 
-**注意**：当前 BasePlatform 的授权码验证 API **不支持回写 machineCode**。授权码验证只返回预设的授权信息，不保存机器码。机器码绑定需要在 UrbanManagement 侧通过 GovProject 扩展字段实现。
+#### 1.3 JWT 授权文件生成与下载 API（新增，从 UrbanManagement 移植）
+
+**背景**：将 UrbanManagement 中的 JWT 签发流程移植到 BasePlatform，统一授权文件签发。
+
+**接口**：`GET /api/auth/license-file`
+
+**描述**：生成并下载 JWT 授权文件（.urban 文件）
+
+**请求参数**：
+```json
+{
+  "productCode": "UrbanManagement",
+  "machineCode": "MACHINE-CODE-12345",
+  "proId": "project-guid",
+  "authEndDate": "2026-12-31T23:59:59"
+}
+```
+
+**响应**：
+```
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="license.urban"
+
+<JWT_TOKEN_CONTENT>
+```
+
+**实现要点**：
+- 使用 RS256 算法签名 JWT（与 UrbanManagement 保持一致）
+- JWT Claims 包含：`proId`, `proName`, `buildLicenseNo`, `fdBuildLicenseNo`, `exp`
+- 私钥配置：`Jwt:PrivateKey`（从 UrbanManagement 移植）
+- 公钥分发给 MaterialClient.Urban 客户端（用于验证）
+- 返回的 JWT 文件可直接用作 .urban 文件
+
+**数据模型**：
+```csharp
+public class LicenseFileRequestDto
+{
+    public string ProductCode { get; set; }
+    public string MachineCode { get; set; }
+    public Guid ProId { get; set; }
+    public DateTime AuthEndDate { get; set; }
+}
+
+public class LicenseFileResponseDto
+{
+    public string JwtToken { get; set; }
+    public string ProId { get; set; }
+    public string ProName { get; set; set; }
+    public DateTime AuthEndDate { get; set; }
+}
+```
+
+**JWT 签名服务**（从 UrbanManagement 移植）：
+```csharp
+public class BasePlatformJwtTokenGenerator
+{
+    private readonly RsaSecurityKey _rsaSecurityKey;
+
+    public BasePlatformJwtTokenGenerator(IConfiguration configuration)
+    {
+        var privateKeyPem = configuration["Jwt:PrivateKey"]
+            ?? throw new InvalidOperationException("JWT 私钥未配置");
+
+        using var rsa = RSA.Create();
+        rsa.ImportFromPem(privateKeyPem);
+        _rsaSecurityKey = new RsaSecurityKey(rsa.ExportParameters(true));
+    }
+
+    public string GenerateLicenseToken(LicenseFileRequestDto request)
+    {
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Issuer = "UrbanManagement",
+            Audience = "MaterialClient.Urban",
+            Expires = request.AuthEndDate,
+            SigningCredentials = new SigningCredentials(_rsaSecurityKey, SecurityAlgorithms.RsaSha256),
+            Subject = new ClaimsIdentity([
+                new Claim("proId", request.ProId.ToString()),
+                new Claim("proName", ""),
+                new Claim("buildLicenseNo", ""),
+                new Claim("fdBuildLicenseNo", ""),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            ])
+        };
+
+        var handler = new JwtSecurityTokenHandler();
+        var token = handler.CreateToken(tokenDescriptor);
+        return handler.WriteToken(token);
+    }
+}
+```
+
+> **说明**：此功能将 UrbanManagement 的 `UrbanLicenseGenerator` 服务移植到 BasePlatform，使 BasePlatform 成为统一的授权文件签发中心。
 
 ---
 
@@ -68,7 +162,34 @@
 
 **改动内容**：
 
-#### 2.1 GovProject 实体扩展
+#### 2.1 移除 JWT 签发功能（已移植到 BasePlatform）
+
+**移除内容**：
+- `UrbanLicenseGenerator` 服务（已移植到 BasePlatform）
+- `GovProjectLicenseAppService` 中的授权文件生成功能
+- JWT 私钥配置（已移到 BasePlatform）
+
+**说明**：JWT 签发统一由 BasePlatform 负责，UrbanManagement 不再签发授权文件。
+
+#### 2.2 新增授权文件下载 API（代理）
+
+**接口**：`GET /api/urban/auth/license-file`
+
+**描述**：代理从 BasePlatform 下载授权文件
+
+**请求参数**：
+```json
+{
+  "machineCode": "MACHINE-CODE-12345"
+}
+```
+
+**实现逻辑**：
+1. 调用 BasePlatform.PublicApi `/api/auth/license-file`
+2. 转发响应给客户端
+3. 缓存授权文件（可选）
+
+#### 2.3 GovProject 实体扩展
 
 ```csharp
 // UrbanManagement.GovProject 实体扩展
@@ -105,7 +226,7 @@ CREATE INDEX IDX_GovProject_AuthToken ON GovProject(AuthToken);
 CREATE INDEX IDX_GovProject_AuthStatus ON GovProject(AuthStatus);
 ```
 
-#### 2.2 新增授权代理 API
+#### 2.4 新增授权码激活代理 API
 
 **接口**：`POST /api/urban/auth/activate`
 
