@@ -1,16 +1,69 @@
-# BasePlatform 授权 API 设计
+# UrbanManagement 授权方案设计
 
 ## 1. 概述
 
-本文档定义 Urban 客户端基于 BasePlatform 的双授权模式所需的 API 接口。
+本文档定义 UrbanManagement 基于当前授权机制的扩展方案，采用 UrbanManagement 代理架构：
+- MaterialClient.Urban → UrbanManagement → BasePlatform.PublicApi
+- UrbanManagement 在 GovProject 中统一管理 MachineCode
+- 简化客户端实现，减少外部依赖
 
-## 2. 新增 API 接口
+## 2. GovProject 表变更
 
-### 2.1 获取授权文件 API（离线授权）
+### 2.1 当前字段
+
+```csharp
+// 当前 UrbanManagement.GovProject 实体
+public class GovProject : Entity<Guid>
+{
+    public string ProName { get; set; } = default!;
+    public string? BuildLicenseNo { get; set; }        // 建设许可证号（保留）
+    public string? FdBuildLicenseNo { get; set; }      // 对接码（删除）
+}
+```
+
+### 2.2 扩展后字段
+
+```csharp
+// 扩展后的 UrbanManagement.GovProject 实体
+public class GovProject : Entity<Guid>
+{
+    public string ProName { get; set; } = default!;
+    public string? BuildLicenseNo { get; set; }        // 建设许可证号（保留）
+
+    // ===== 新增：机器码授权字段 =====
+    public string? MachineCode { get; set; }           // 当前绑定的机器码
+    public string? AuthToken { get; set; }             // 授权令牌（GUID）
+    public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
+    public DateTime? AuthEndDate { get; set; }         // 授权结束时间
+    public int? AuthStatus { get; set; }               // 授权状态 0=失效, 1=正常
+    public int? AuthType { get; set; }                 // 授权类型 0=离线, 1=在线
+    public DateTime? LastMachineCodeUpdate { get; set; } // 机器码最后更新时间
+}
+```
+
+### 2.3 字段变更总结
+
+| 字段 | 变更 | 说明 |
+|-----|------|------|
+| BuildLicenseNo | **保留** | 建设许可证号，业务标识 |
+| FdBuildLicenseNo | **删除** | 对接码，被 MachineCode 替代 |
+| MachineCode | **新增** | 机器码绑定 |
+| AuthToken | **新增** | BasePlatform 授权令牌 |
+| AuthBeginDate | **新增** | 授权开始时间 |
+| AuthEndDate | **新增** | 授权结束时间 |
+| AuthStatus | **新增** | 授权状态 |
+| AuthType | **新增** | 授权类型（离线/在线） |
+| LastMachineCodeUpdate | **新增** | 机器码更新时间 |
+
+## 3. BasePlatform.PublicApi 接口（UrbanManagement 调用）
+
+UrbanManagement 通过 BasePlatform.PublicApi 调用以下接口。
+
+### 3.1 获取授权文件 API（离线授权）
 
 **接口**：`GET /api/auth/license-file`
 
-**描述**：BasePlatform 管理员录入机器码后，生成并下载授权文件
+**描述**：BasePlatform.WebApi 管理界面录入机器码后，生成并下载授权文件
 
 **请求参数**：
 
@@ -52,11 +105,11 @@
 }
 ```
 
-### 2.2 机器码上报与激活 API（在线授权）
+### 3.2 机器码上报与激活 API（在线授权）
 
 **接口**：`POST /api/auth/activate`
 
-**描述**：客户端使用授权码激活，同时上报机器码
+**描述**：UrbanManagement 使用授权码激活，同时上报机器码
 
 **请求参数**：
 
@@ -87,13 +140,14 @@
 1. 验证 Redis 中的授权码
 2. 删除授权码（一次性使用）
 3. 插入/更新 `Material_MachineCode` 表
-4. 返回授权信息
+4. 返回授权信息给 UrbanManagement
+5. UrbanManagement 更新本地 GovProject
 
-### 2.3 在线验证 API
+### 3.3 在线验证 API
 
 **接口**：`POST /api/auth/verify`
 
-**描述**：客户端在线验证授权有效性
+**描述**：UrbanManagement 在线验证授权有效性
 
 **请求参数**：
 
@@ -119,7 +173,7 @@
 }
 ```
 
-### 2.4 机器码获取脚本 API（可选）
+### 3.4 机器码获取脚本 API（可选）
 
 **接口**：`GET /api/auth/machine-code-script`
 
@@ -127,11 +181,26 @@
 
 **响应**：返回对应平台的脚本文件
 
-## 3. 数据库表设计
+## 4. BasePlatform.Material_MachineCode 表设计
 
-### 3.1 Material_MachineCode 表扩展
+### 4.1 表结构
 
-现有表已包含所需字段，需明确使用约定：
+```sql
+-- BasePlatform.Material_MachineCode 表（现有）
+CREATE TABLE Material_MachineCode (
+    MachineId INT PRIMARY KEY IDENTITY,
+    ProId NVARCHAR(50),
+    AuthStatus INT,                    -- 0=失效, 1=正常
+    MachineCode NVARCHAR(100),
+    Remark NVARCHAR(500),
+    AddDate DATETIME,
+    AuthEndDate DATETIME,
+    AuthToken NVARCHAR(50),
+    AuthType INT                        -- 0=离线, 1=在线
+);
+```
+
+### 4.2 使用约定
 
 ```sql
 -- AuthType 字段约定
@@ -144,7 +213,7 @@ CREATE INDEX IDX_MachineCode_Code ON Material_MachineCode(MachineCode);
 CREATE INDEX IDX_MachineCode_Token ON Material_MachineCode(AuthToken);
 ```
 
-### 3.2 Redis 授权码存储约定
+## 5. Redis 授权码存储约定
 
 ```
 Key: AuthClientLicense:{productCode}:{code}
@@ -152,9 +221,9 @@ Value: JSON 授权信息
 TTL: 86400（24小时，可配置）
 ```
 
-## 4. 安全考虑
+## 6. 安全考虑
 
-### 4.1 授权文件加密
+### 6.1 授权文件加密
 
 ```csharp
 // 使用 AES 加密授权文件
@@ -176,7 +245,7 @@ public class LicenseFileEncryption
 }
 ```
 
-### 4.2 数字签名
+### 6.2 数字签名
 
 ```csharp
 // 使用 RSA 签名确保文件完整性
@@ -198,7 +267,7 @@ public class LicenseSignature
 }
 ```
 
-### 4.3 AuthToken 生成
+### 6.3 AuthToken 生成
 
 ```csharp
 // 使用 GUID 生成唯一 Token
@@ -211,7 +280,7 @@ public class AuthTokenGenerator
 }
 ```
 
-## 5. 错误码定义
+## 7. 错误码定义
 
 | 错误码 | 描述 | 处理建议 |
 |-------|------|---------|
@@ -223,7 +292,77 @@ public class AuthTokenGenerator
 | AUTH_006 | 授权文件格式错误 | 重新下载授权文件 |
 | AUTH_007 | 签名验证失败 | 授权文件被篡改 |
 
+## 8. UrbanManagement 代理接口（MaterialClient.Urban 调用）
+
+### 8.1 授权码激活代理接口
+
+**接口**：`POST /api/urban/auth/activate`
+
+**描述**：MaterialClient.Urban 通过 UrbanManagement 代理激活授权
+
+**请求参数**：
+
+```json
+{
+  "code": "ONE-TIME-AUTH-CODE",
+  "machineCode": "MACHINE-CODE-12345",
+  "proId": "project-guid"
+}
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "authToken": "GUID-AUTH-TOKEN",
+    "authEndDate": "2026-12-31T23:59:59",
+    "proId": "project-guid",
+    "proName": "项目名称"
+  }
+}
+```
+
+### 8.2 本地验证接口
+
+**接口**：`POST /api/urban/auth/verify`
+
+**描述**：MaterialClient.Urban 通过 UrbanManagement 验证授权
+
+**请求参数**：
+
+```json
+{
+  "authToken": "GUID-AUTH-TOKEN",
+  "machineCode": "MACHINE-CODE-12345"
+}
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "isValid": true,
+    "proId": "project-guid",
+    "proName": "项目名称",
+    "authEndDate": "2026-12-31T23:59:59"
+  }
+}
+```
+
+### 8.3 授权文件获取代理接口
+
+**接口**：`GET /api/urban/auth/license-file?machineCode=xxx`
+
+**描述**：MaterialClient.Urban 通过 UrbanManagement 获取授权文件
+
+**响应**：返回加密的授权文件
+
 ---
 
-**文档版本**：1.0
+**文档版本**：2.0
 **最后更新**：2026-06-23
+**变更说明**：采用 UrbanManagement 代理方案，简化 GovProject 字段变更
