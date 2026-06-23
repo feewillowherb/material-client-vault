@@ -66,35 +66,91 @@ public class GovProject : Entity<Guid>
 }
 ```
 
-### 2. MaterialClient.Urban 授权结构（保持不变）
+### 2. MaterialClient.Urban 授权结构（实际代码）
 
-**当前 LicenseInfo 结构**（保持不变）：
+**当前 LicenseInfo 实体**（MaterialClient.Common.Entities.LicenseInfo）：
 
 ```csharp
-// MaterialClient.Urban 当前 LicenseInfo 结构（兼容现有客户端）
-public class LicenseInfo
+/// <summary>
+/// 授权许可信息实体
+/// 存储软件授权信息，包括项目ID、授权令牌和有效期
+/// </summary>
+[Table("LicenseInfo")]
+public class LicenseInfo : Entity<Guid>
 {
-    public string LicenseKey { get; set; }          // 许可证密钥（BuildLicenseNo）
-    public string? MachineCode { get; set; }       // 机器码（新增可选字段）
-    public DateTime? ExpireDate { get; set; }      // 过期日期（新增可选字段）
-    public string? ProId { get; set; }             // 项目ID（新增可选字段）
-    public string? ProName { get; set; }           // 项目名称（新增可选字段）
+    /// <summary>
+    /// 项目ID（从基础平台获取）
+    /// </summary>
+    public Guid ProjectId { get; set; }
+
+    /// <summary>
+    /// 授权令牌（可选，从基础平台获取）
+    /// </summary>
+    public Guid? AuthToken { get; set; }
+
+    /// <summary>
+    /// 授权结束时间
+    /// </summary>
+    public DateTime AuthEndTime { get; set; }
+
+    /// <summary>
+    /// 项目名称
+    /// </summary>
+    public string? ProName { get; set; }
+
+    /// <summary>
+    /// 施工许可证号（接入码）
+    /// </summary>
+    public string? BuildLicenseNo { get; set; }
+
+    /// <summary>
+    /// 对接码
+    /// </summary>
+    public string? FdBuildLicenseNo { get; set; }
+
+    /// <summary>
+    /// 服务器最后一次提供的权威 JWT 原始文本。
+    /// 在线更新时由服务器端推送，启动时优先使用此值验证授权。
+    /// 若为 null，则回退到 .urban 文件。
+    /// </summary>
+    public string? LatestJwtToken { get; set; }
+
+    /// <summary>
+    /// 机器码（用于验证授权是否匹配当前机器）
+    /// </summary>
+    public string MachineCode { get; set; }
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 最后更新时间
+    /// </summary>
+    public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// 检查授权是否已过期
+    /// </summary>
+    public bool IsExpired => DateTime.Now > AuthEndTime;
+
+    /// <summary>
+    /// 更新授权信息
+    /// </summary>
+    public void Update(Guid? authToken, DateTime authEndTime, string machineCode,
+        string? proName = null, string? buildLicenseNo = null, string? fdBuildLicenseNo = null);
 }
 ```
 
-**授权逻辑**：
-- 客户端保持当前 `LicenseInfo` 结构不变
-- 新增字段为可选字段，向后兼容
-- 验证时使用 `LicenseKey`（BuildLicenseNo）+ `MachineCode` 向 UrbanManagement 验证
-- UrbanManagement 在 GovProject 中管理授权状态和机器码绑定
+**授权验证机制**：
+1. **JWT 验证**：使用 RSA 公钥验证 RS256 签名
+2. **验证优先级**：LatestJwtToken → .urban 文件
+3. **Claims 提取**：proId, proName, buildLicenseNo, fdBuildLicenseNo, exp
+4. **过期检查**：AuthEndTime（从 JWT exp claim 获取）
+5. **机器码验证**：当前机器码 == LicenseInfo.MachineCode
 
-**SQLite 存储**（可选，仅用于缓存）：
-
-```sql
--- 客户端可选择缓存 LicenseInfo 以便离线使用
-CREATE TABLE UrbanAuth (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    LicenseKey TEXT NOT NULL,         -- BuildLicenseNo
+> **说明**：客户端使用 JWT 令牌验证授权。UrbanManagement 通过 SignalR DeviceStatusHub 推送最新的 JWT 到客户端的 `LatestJwtToken` 字段。
     ProId TEXT,                       -- 项目ID（可选）
     CreateDate TEXT NOT NULL
 );
