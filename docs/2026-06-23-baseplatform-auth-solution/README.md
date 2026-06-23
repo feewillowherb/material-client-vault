@@ -62,19 +62,23 @@
 public class GovProject : Entity<Guid>
 {
     // 现有字段...
-    public string? BuildLicenseNo { get; set; }
-    public string? FdBuildLicenseNo { get; set; }
+    public string? BuildLicenseNo { get; set; }       // 建设许可证号（保留，作为 LicenseKey）
+    // public string? FdBuildLicenseNo { get; set; }   // 对接码（删除）
 
     // 新增机器码授权字段
     public string? MachineCode { get; set; }           // 绑定的机器码
     public string? AuthToken { get; set; }             // 授权令牌
     public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
     public DateTime? AuthEndDate { get; set; }         // 授权结束时间
-    public int? AuthStatus { get; set; }               // 授权状态
+    public int? AuthStatus { int? get; set; }               // 授权状态
     public int? AuthType { get; set; }                 // 授权类型
     public DateTime? LastMachineCodeUpdate { get; set; } // 机器码更新时间
 }
 ```
+
+**客户端 LicenseInfo 结构**（保持不变）：
+- 客户端使用 `LicenseKey`（对应 BuildLicenseNo）进行验证
+- 新增字段为可选，确保向后兼容
 
 ### 原直连方案摘要
 
@@ -93,12 +97,13 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 
 ## 关键验证规则（UrbanManagement 代理模式）
 
-**启动时验证**：客户端调用 UrbanManagement API（ProId + 当前机器码）
+**启动时验证**：客户端使用 LicenseInfo.LicenseKey + 当前机器码调用 UrbanManagement API
+- UrbanManagement 根据 LicenseKey（BuildLicenseNo）查找 GovProject
 - UrbanManagement 验证：当前机器码 == GovProject.MachineCode
 
 **任一不匹配** → 授权失效 → 关闭程序
 
-> **说明**：客户端仅存储 ProId，不持久化 AuthToken（AuthToken 有时效性，失效两天）。所有验证通过 UrbanManagement 实时进行。
+> **说明**：客户端保持当前 LicenseInfo 结构不变，使用 LicenseKey（BuildLicenseNo）进行验证。UrbanManagement 负责授权验证和机器码管理。
 
 ## 实施工期估算
 

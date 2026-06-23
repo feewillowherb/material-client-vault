@@ -66,18 +66,41 @@ public class GovProject : Entity<Guid>
 }
 ```
 
-### 2. MaterialClient.Urban SQLite 表（极简）
+### 2. MaterialClient.Urban 授权结构（保持不变）
+
+**当前 LicenseInfo 结构**（保持不变）：
+
+```csharp
+// MaterialClient.Urban 当前 LicenseInfo 结构（兼容现有客户端）
+public class LicenseInfo
+{
+    public string LicenseKey { get; set; }          // 许可证密钥（BuildLicenseNo）
+    public string? MachineCode { get; set; }       // 机器码（新增可选字段）
+    public DateTime? ExpireDate { get; set; }      // 过期日期（新增可选字段）
+    public string? ProId { get; set; }             // 项目ID（新增可选字段）
+    public string? ProName { get; set; }           // 项目名称（新增可选字段）
+}
+```
+
+**授权逻辑**：
+- 客户端保持当前 `LicenseInfo` 结构不变
+- 新增字段为可选字段，向后兼容
+- 验证时使用 `LicenseKey`（BuildLicenseNo）+ `MachineCode` 向 UrbanManagement 验证
+- UrbanManagement 在 GovProject 中管理授权状态和机器码绑定
+
+**SQLite 存储**（可选，仅用于缓存）：
 
 ```sql
--- 客户端只需存储项目ID
+-- 客户端可选择缓存 LicenseInfo 以便离线使用
 CREATE TABLE UrbanAuth (
     Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ProId TEXT NOT NULL UNIQUE,      -- 项目ID
+    LicenseKey TEXT NOT NULL,         -- BuildLicenseNo
+    ProId TEXT,                       -- 项目ID（可选）
     CreateDate TEXT NOT NULL
 );
 ```
 
-> **说明**：客户端不需要持久化 AuthToken，因为 AuthToken 有时效性（失效两天）。客户端只需存储 ProId，通过 ProId 和当前机器码向 UrbanManagement 进行实时验证。
+> **说明**：客户端 LicenseInfo 结构保持不变。新增字段（MachineCode、ExpireDate 等）为可选字段，确保向后兼容。UrbanManagement 负责授权验证和机器码管理。
 
 ## 流程设计
 
@@ -279,7 +302,7 @@ public class UrbanAuthProxyController : AbpController
 }
 ```
 
-### 2. 本地验证接口
+### 2. 本地验证接口（基于 LicenseKey）
 
 ```csharp
 /// <summary>
@@ -289,13 +312,13 @@ public class UrbanAuthProxyController : AbpController
 public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(
     [FromBody] VerifyLocalRequest request)
 {
-    // 1. 根据 ProId 查找 GovProject
+    // 1. 根据 LicenseKey（BuildLicenseNo）查找 GovProject
     var project = await _projectRepository.FirstOrDefaultAsync(
-        p => p.ProId == request.ProId);
+        p => p.BuildLicenseNo == request.LicenseKey);
 
     if (project == null)
     {
-        return ApiResultDto<VerifyResultDto>.Fail("项目不存在");
+        return ApiResultDto<VerifyResultDto>.Fail("许可证不存在");
     }
 
     // 2. 检查授权状态
@@ -365,35 +388,36 @@ public async Task<IActionResult> GetLicenseFileProxy([FromQuery] string machineC
 }
 ```
 
-## MaterialClient.Urban 简化后的实现
+## MaterialClient.Urban 验证实现（兼容现有 LicenseInfo）
 
-### 1. 验证服务（极简版）
+### 1. 验证服务（基于 LicenseKey）
 
 ```csharp
 public class UrbanAuthService
 {
     private readonly IUrbanManagementApi _urbanApi;
-    private readonly AppDbContext _db;
+    private readonly LicenseInfo _licenseInfo;  // 当前 LicenseInfo 结构
 
     /// <summary>
-    /// 启动时验证
+    /// 启动时验证（保持现有接口）
     /// </summary>
     public async Task<bool> VerifyOnStartup()
     {
-        // 1. 从本地 SQLite 读取 ProId
-        var localAuth = await _db.UrbanAuths.FirstOrDefaultAsync();
-        if (localAuth == null)
+        // 1. 使用当前 LicenseInfo 中的 LicenseKey（BuildLicenseNo）
+        if (string.IsNullOrEmpty(_licenseInfo.LicenseKey))
         {
-            return false; // 无授权，需要激活
+            MessageBox.Show("未配置许可证，请联系管理员", "授权验证",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
 
         // 2. 获取当前机器码
         var machineCode = MachineCodeProvider.GetMachineCode();
 
-        // 3. 调用 UrbanManagement 验证（使用 ProId + MachineCode）
+        // 3. 调用 UrbanManagement 验证（LicenseKey + MachineCode）
         var response = await _urbanApi.VerifyLocal(new VerifyLocalRequest
         {
-            ProId = localAuth.ProId,
+            LicenseKey = _licenseInfo.LicenseKey,  // BuildLicenseNo
             MachineCode = machineCode
         });
 
@@ -404,6 +428,14 @@ public class UrbanAuthService
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Application.Current.Shutdown();
             return false;
+        }
+
+        // 5. 更新本地 LicenseInfo（如果返回了新字段）
+        if (response.Data != null)
+        {
+            _licenseInfo.ProId = response.Data.ProId;
+            _licenseInfo.ProName = response.Data.ProName;
+            _licenseInfo.ExpireDate = response.Data.AuthEndDate;
         }
 
         return true;
