@@ -51,8 +51,10 @@
 
 | 方案 | 架构 | 客户端复杂度 | 安全性 |
 |-----|------|-------------|--------|
-| 直连 | MaterialClient → BasePlatform | 中 | 中 |
-| **代理（推荐）** | **MaterialClient → UrbanManagement → BasePlatform** | **低** | **高** |
+| 直连 | MaterialClient → BasePlatform.PublicApi | 中 | 中 |
+| **代理（推荐）** | **MaterialClient → UrbanManagement → BasePlatform.PublicApi** | **低** | **高** |
+
+> **说明**：UrbanManagement 通过 BasePlatform.PublicApi 通信。BasePlatform.WebApi 用于 UI 相关操作。
 
 #### GovProject 扩展字段
 

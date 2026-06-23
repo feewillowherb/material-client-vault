@@ -15,8 +15,10 @@ MaterialClient.Urban ──直接连接──> BasePlatform.PublicApi
 
 **新方案**（UrbanManagement 代理）：
 ```
-MaterialClient.Urban ──连接──> UrbanManagement ──代理──> BasePlatform
+MaterialClient.Urban ──连接──> UrbanManagement ──代理──> BasePlatform.PublicApi
 ```
+
+> **说明**：UrbanManagement 通过 BasePlatform.PublicApi 与 BasePlatform 通信。BasePlatform.WebApi 用于 UI 相关操作。
 
 ## 方案优势
 
