@@ -91,13 +91,14 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 | 离线授权 | 导入授权文件 | 本地机器码比对 | 网络隔离环境 |
 | 在线授权 | 输入授权码 | 定期服务器验证 | 有网络环境 |
 
-## 关键验证规则
+## 关键验证规则（UrbanManagement 代理模式）
 
-**离线验证**：当前机器码 == SQLite 机器码
-
-**在线验证**：当前机器码 == SQLite 机器码 == BasePlatform 机器码
+**启动时验证**：客户端调用 UrbanManagement API（ProId + 当前机器码）
+- UrbanManagement 验证：当前机器码 == GovProject.MachineCode
 
 **任一不匹配** → 授权失效 → 关闭程序
+
+> **说明**：客户端仅存储 ProId，不持久化 AuthToken（AuthToken 有时效性，失效两天）。所有验证通过 UrbanManagement 实时进行。
 
 ## 实施工期估算
 

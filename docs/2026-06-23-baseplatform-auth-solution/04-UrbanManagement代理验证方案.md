@@ -66,18 +66,18 @@ public class GovProject : Entity<Guid>
 }
 ```
 
-### 2. MaterialClient.Urban SQLite 表（简化）
+### 2. MaterialClient.Urban SQLite 表（极简）
 
 ```sql
--- 客户端只需存储最小必要信息
+-- 客户端只需存储项目ID
 CREATE TABLE UrbanAuth (
     Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ProId TEXT NOT NULL,              -- 项目ID
-    AuthToken TEXT NOT NULL UNIQUE,   -- 授权令牌（与 GovProject 同步）
-    LastSyncDate TEXT NOT NULL,       -- 最后同步时间
+    ProId TEXT NOT NULL UNIQUE,      -- 项目ID
     CreateDate TEXT NOT NULL
 );
 ```
+
+> **说明**：客户端不需要持久化 AuthToken，因为 AuthToken 有时效性（失效两天）。客户端只需存储 ProId，通过 ProId 和当前机器码向 UrbanManagement 进行实时验证。
 
 ## 流程设计
 
@@ -150,7 +150,7 @@ CREATE TABLE UrbanAuth (
 | 6 | UrbanManagement | 更新 GovProject | 写入 MachineCode, AuthToken |
 | 7 | BasePlatform | 返回授权信息给管理员（确认） | - |
 | 8 | UrbanManagement | 返回激活结果给客户端 | → MaterialClient.Urban |
-| 9 | MaterialClient.Urban | 写入本地 SQLite | - |
+| 9 | MaterialClient.Urban | 写入 ProId 到本地 SQLite | - |
 
 #### 关键时序说明
 
@@ -183,27 +183,30 @@ T6: BasePlatform 向管理员确认激活成功（可选）
 T7: UrbanManagement 返回结果给 MaterialClient.Urban
     → Response: { success: true, data: { authToken: "TOKEN-XYZ", ... } }
 
-T8: MaterialClient.Urban 写入本地 SQLite
-    → INSERT INTO UrbanAuth (ProId, AuthToken, LastSyncDate, ...) VALUES (...)
+T8: MaterialClient.Urban 写入本地 SQLite（仅存储 ProId）
+    → INSERT INTO UrbanAuth (ProId, CreateDate) VALUES (...)
 ```
 
-### 3. 本地验证流程（简化）
+### 3. 本地验证流程（极简）
 
 ```
 MaterialClient.Urban 启动
         │
         ▼
-1. 从 SQLite 读取 AuthToken
+1. 从 SQLite 读取 ProId
         │
         ▼
-2. 调用 UrbanManagement API 验证
+2. 获取当前机器码
+        │
+        ▼
+3. 调用 UrbanManagement API 验证（ProId + MachineCode）
         │
         ▼
 ┌───────────────────────────────┐
 │ UrbanManagement 验证逻辑：      │
-│ 1. 检查 GovProject.AuthStatus  │
-│ 2. 检查 GovProject.AuthEndDate│
-│ 3. 获取客户端机器码            │
+│ 1. 根据 ProId 查找 GovProject  │
+│ 2. 检查 GovProject.AuthStatus  │
+│ 3. 检查 GovProject.AuthEndDate│
 │ 4. 比对：当前机器码 ==         │
 │    GovProject.MachineCode      │
 └───────────────────────────────┘
@@ -286,13 +289,13 @@ public class UrbanAuthProxyController : AbpController
 public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(
     [FromBody] VerifyLocalRequest request)
 {
-    // 1. 根据 AuthToken 查找 GovProject
+    // 1. 根据 ProId 查找 GovProject
     var project = await _projectRepository.FirstOrDefaultAsync(
-        p => p.AuthToken == request.AuthToken);
+        p => p.ProId == request.ProId);
 
     if (project == null)
     {
-        return ApiResultDto<VerifyResultDto>.Fail("授权不存在");
+        return ApiResultDto<VerifyResultDto>.Fail("项目不存在");
     }
 
     // 2. 检查授权状态
@@ -370,14 +373,15 @@ public async Task<IActionResult> GetLicenseFileProxy([FromQuery] string machineC
 public class UrbanAuthService
 {
     private readonly IUrbanManagementApi _urbanApi;
+    private readonly AppDbContext _db;
 
     /// <summary>
     /// 启动时验证
     /// </summary>
     public async Task<bool> VerifyOnStartup()
     {
-        // 1. 从本地 SQLite 读取 AuthToken
-        var localAuth = await _db.UrbalAuths.FirstOrDefaultAsync();
+        // 1. 从本地 SQLite 读取 ProId
+        var localAuth = await _db.UrbanAuths.FirstOrDefaultAsync();
         if (localAuth == null)
         {
             return false; // 无授权，需要激活
@@ -386,10 +390,10 @@ public class UrbanAuthService
         // 2. 获取当前机器码
         var machineCode = MachineCodeProvider.GetMachineCode();
 
-        // 3. 调用 UrbanManagement 验证
+        // 3. 调用 UrbanManagement 验证（使用 ProId + MachineCode）
         var response = await _urbanApi.VerifyLocal(new VerifyLocalRequest
         {
-            AuthToken = localAuth.AuthToken,
+            ProId = localAuth.ProId,
             MachineCode = machineCode
         });
 
@@ -426,14 +430,21 @@ public class UrbanAuthService
             return false;
         }
 
-        // 保存到本地 SQLite
-        await _db.UrbalAuths.AddAsync(new UrbanAuth
+        // 仅保存 ProId 到本地 SQLite（不保存 AuthToken）
+        var existing = await _db.UrbanAuths.FirstOrDefaultAsync();
+        if (existing != null)
         {
-            ProId = proId,
-            AuthToken = response.Data.AuthToken,
-            LastSyncDate = DateTime.UtcNow,
-            CreateDate = DateTime.UtcNow
-        });
+            existing.ProId = proId;
+        }
+        else
+        {
+            await _db.UrbanAuths.AddAsync(new UrbanAuth
+            {
+                ProId = proId,
+                CreateDate = DateTime.UtcNow
+            });
+        }
+        await _db.SaveChangesAsync();
 
         MessageBox.Show("激活成功！", "成功",
             MessageBoxButton.OK, MessageBoxImage.Information);
