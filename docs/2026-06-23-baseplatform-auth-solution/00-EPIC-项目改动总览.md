@@ -431,12 +431,113 @@ public class UrbanAuthService
 
 ### 1. BasePlatform 不回写 MachineCode
 
-**现状**：BasePlatform.PublicApi 的授权码验证 API **不支持回写 machineCode**。
+**核心决策**：BasePlatform.PublicApi 的授权码验证 API **不支持回写 MachineCode**，由 UrbanManagement 在 GovProject 中自行管理。
 
-**解决方案**：
-- UrbanManagement 在 GovProject 中自行管理 MachineCode
-- 授权码验证时，BasePlatform 返回预设的授权信息
-- UrbanManagement 收到响应后，在本地 GovProject 中记录 MachineCode
+---
+
+#### 1.1 决策背景
+
+**技术约束**：
+- BasePlatform 现有的 Material_MachineCode 表设计为授权中心的全局视图
+- 该表由 BasePlatform.WebApi 通过管理界面操作，不暴露给外部 API 写入
+- 若开放写权限，需重新设计 BasePlatform 的安全模型和 API 权限体系
+
+**架构选择**：
+- UrbanManagement 作为代理层，已有 GovProject 表存储项目级数据
+- GovProject 是 Urban 领域的核心实体，天然适合管理 MachineCode
+- 保持 BasePlatform 为只读验证服务，简化跨系统交互
+
+---
+
+#### 1.2 架构原理
+
+**责任分离**：
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      BasePlatform 平台                            │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  Material_MachineCode（授权中心全局视图）                    │ │
+│  │  - 授权状态全局汇总                                         │ │
+│  │  - AuthToken 管理                                          │ │
+│  │  - 授权过期时间管理                                         │ │
+│  │  - 由 BasePlatform.WebApi 管理（不暴露写 API）              │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                                ↑
+                                │ 只读验证
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                    UrbanManagement 代理层                        │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  GovProject（项目级机器码权威来源）                          │ │
+│  │  - MachineCode（唯一权威存储）                               │ │
+│  │  - AuthToken（来自 BasePlatform 的副本）                     │ │
+│  │  - LastMachineCodeUpdate（更新追踪）                         │ │
+│  │  - 由 UrbanManagement 代理 API 写入                          │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**数据流向**：
+1. **激活时**：UrbanManagement 收到客户端激活请求 → 调用 BasePlatform 验证 → BasePlatform 返回授权信息 → UrbanManagement 在本地 GovProject 写入 MachineCode
+2. **验证时**：UrbanManagement 使用本地 GovProject.MachineCode 进行比对 → 不需要调用 BasePlatform
+
+---
+
+#### 1.3 权衡分析
+
+**优点**：
+
+| 优点 | 说明 |
+|-----|------|
+| **单一数据源** | GovProject.MachineCode 是唯一权威来源，避免数据同步冲突 |
+| **简化 API** | BasePlatform API 保持只读，无需开放写权限 |
+| **降低耦合** | UrbanManagement 可以独立管理项目数据，不依赖 BasePlatform 的写入接口 |
+| **性能优化** | 验证时无需跨系统调用，直接比对本地数据 |
+| **安全隔离** | BasePlatform 不暴露写 API，减少攻击面 |
+
+**缺点与缓解**：
+
+| 缺点 | 缓解措施 |
+|-----|---------|
+| **BasePlatform 无全局 MachineCode 视图** | UrbanManagement 可定期通过管理界面同步数据到 BasePlatform |
+| **数据一致性风险** | GovProject 是权威来源，BasePlatform.Material_MachineCode 作为副本即可 |
+| **运维复杂度增加** | 需明确 GovProject 为主要数据源，建立运维规范 |
+
+---
+
+#### 1.4 替代方案对比
+
+**方案 A（当前）**：UrbanManagement 管理 MachineCode
+- ✅ 单一数据源，无同步冲突
+- ✅ API 简化，BasePlatform 只读
+- ❌ BasePlatform 缺乏全局视图
+
+**方案 B**：BasePlatform 回写 MachineCode
+- ✅ BasePlatform 有全局机器码视图
+- ✅ 授权中心数据完整
+- ❌ 需开放 BasePlatform 写 API（安全风险）
+- ❌ 两个系统都可写入同一数据（同步冲突）
+- ❌ UrbanManagement 需等待 BasePlatform 写入完成（延迟增加）
+
+**方案 C**：双向同步
+- ✅ 两边都有完整数据
+- ❌ 需要复杂的同步机制
+- ❌ 数据冲突解决困难
+- ❌ 运维成本高
+
+---
+
+#### 1.5 实施建议
+
+**当前方案实施要点**：
+1. **明确数据所有权**：在文档中明确 GovProject.MachineCode 为唯一权威来源
+2. **API 设计**：BasePlatform.PublicApi 保持只读验证接口
+3. **运维规范**：如需全局视图，通过 UrbanManagement → BasePlatform.WebApi 的管理界面同步
+
+**未来扩展路径**：
+- 如需 BasePlatform 拥有全局 MachineCode 视图，可通过 UrbanManagement 提供的查询接口定期同步
+- 或由 UrbanManagement 定期通过管理界面更新 BasePlatform.Material_MachineCode 表
 
 ### 2. 客户端激活时不提供 ProId
 
