@@ -51,20 +51,29 @@ MaterialClient.Urban ──连接──> UrbanManagement ──代理──> Bas
 // UrbanManagement.GovProject 实体扩展
 public class GovProject : Entity<Guid>
 {
+    // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 保留：建设许可证号
-    public string? FdBuildLicenseNo { get; set; }      // 保留：对接码
+    public string? BuildLicenseNo { get; set; }        // 建设许可证号
+    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
 
     // ===== 新增：机器码授权字段 =====
     public string? MachineCode { get; set; }           // 当前绑定的机器码
     public string? AuthToken { get; set; }             // 授权令牌
-    public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
-    public DateTime? AuthEndDate { get; set; }         // 授权结束时间
-    public int? AuthStatus { get; set; }               // 授权状态 0=失效, 1=正常
-    public int? AuthType { get; set; }                 // 授权类型 0=离线, 1=在线
     public DateTime? LastMachineCodeUpdate { get; set; } // 机器码最后更新时间
 }
 ```
+
+**字段说明**：
+- `MachineCode` - 客户端机器码，用于绑定特定设备
+- `AuthToken` - BasePlatform 授权令牌（GUID），由 BasePlatform 返回
+- `LastMachineCodeUpdate` - 机器码最后更新时间，用于追踪变更
+- `AuthEndTime` - 现有字段，表示授权结束时间
+
+**不需要的字段**：
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理
+- ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
+- ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理
 
 ### 2. MaterialClient.Urban 授权结构（实际代码）
 
@@ -285,9 +294,8 @@ MaterialClient.Urban 启动
 ┌───────────────────────────────┐
 │ UrbanManagement 验证逻辑：      │
 │ 1. 根据 ProId 查找 GovProject  │
-│ 2. 检查 GovProject.AuthStatus  │
-│ 3. 检查 GovProject.AuthEndDate│
-│ 4. 比对：当前机器码 ==         │
+│ 2. 检查 GovProject.AuthEndTime │（是否过期）
+│ 3. 比对：当前机器码 ==         │
 │    GovProject.MachineCode      │
 └───────────────────────────────┘
         │
@@ -341,10 +349,7 @@ public class UrbanAuthProxyController : AbpController
         {
             project.MachineCode = request.MachineCode;
             project.AuthToken = basePlatformResponse.Data.AuthToken;
-            project.AuthBeginDate = DateTime.UtcNow;
-            project.AuthEndDate = basePlatformResponse.Data.AuthEndDate;
-            project.AuthStatus = 1; // 正常
-            project.AuthType = 1; // 在线授权
+            project.AuthEndTime = basePlatformResponse.Data.AuthEndDate;
             project.LastMachineCodeUpdate = DateTime.UtcNow;
 
             await _projectRepository.UpdateAsync(project);
@@ -381,29 +386,19 @@ public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(
         return ApiResultDto<VerifyResultDto>.Fail("许可证不存在");
     }
 
-    // 2. 检查授权状态
-    if (project.AuthStatus != 1)
+    // 2. 检查授权是否过期
+    if (project.AuthEndTime.HasValue && DateTime.UtcNow > project.AuthEndTime.Value)
     {
-        return ApiResultDto<VerifyResultDto>.Fail("授权已失效");
-    }
-
-    // 3. 检查授权是否过期
-    if (project.AuthEndDate.HasValue && DateTime.UtcNow > project.AuthEndDate.Value)
-    {
-        project.AuthStatus = 0; // 标记为失效
-        await _projectRepository.UpdateAsync(project);
         return ApiResultDto<VerifyResultDto>.Fail("授权已过期");
     }
 
-    // 4. 验证机器码（关键步骤）
+    // 3. 验证机器码（关键步骤）
     if (project.MachineCode != request.MachineCode)
     {
         _logger.LogWarning(
             "Machine code mismatch for project {ProId}. Expected: {Expected}, Actual: {Actual}",
             project.ProId, project.MachineCode, request.MachineCode);
 
-        project.AuthStatus = 0; // 标记为失效
-        await _projectRepository.UpdateAsync(project);
         return ApiResultDto<VerifyResultDto>.Fail("机器码不匹配，授权无效");
     }
 

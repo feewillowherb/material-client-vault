@@ -195,35 +195,41 @@ public class BasePlatformJwtTokenGenerator
 // UrbanManagement.GovProject 实体扩展
 public class GovProject : Entity<Guid>
 {
+    // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号（保留）
+    public string? BuildLicenseNo { get; set; }        // 建设许可证号
+    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
+    public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
     // ===== 新增：机器码授权字段 =====
     public string? MachineCode { get; set; }           // 绑定的机器码
     public string? AuthToken { get; set; }             // 授权令牌（GUID）
-    public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
-    public DateTime? AuthEndDate { get; set; }         // 授权结束时间
-    public int? AuthStatus { get; set; }               // 授权状态 0=失效, 1=正常
-    public int? AuthType { get; set; }                 // 授权类型 0=离线, 1=在线
     public DateTime? LastMachineCodeUpdate { get; set; } // 机器码最后更新时间
 }
 ```
+
+**字段说明**：
+- `MachineCode` - 客户端机器码，用于绑定特定设备
+- `AuthToken` - BasePlatform 授权令牌（GUID），由 BasePlatform 返回
+- `LastMachineCodeUpdate` - 机器码最后更新时间，用于追踪变更
+- `AuthEndTime` - 现有字段，表示授权结束时间，由 BasePlatform 返回
+
+**不需要的字段**：
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理，GovProject 不需要
+- ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
+- ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理，UrbanManagement 作为代理层不需要区分
 
 **数据库迁移**：
 ```sql
 -- 添加新字段到 GovProject 表
 ALTER TABLE GovProject ADD COLUMN MachineCode NVARCHAR(128) NULL;
 ALTER TABLE GovProject ADD COLUMN AuthToken UNIQUEIDENTIFIER NULL;
-ALTER TABLE GovProject ADD COLUMN AuthBeginDate DATETIME2 NULL;
-ALTER TABLE GovProject ADD COLUMN AuthEndDate DATETIME2 NULL;
-ALTER TABLE GovProject ADD COLUMN AuthStatus INT NULL;
-ALTER TABLE GovProject ADD COLUMN AuthType INT NULL;
 ALTER TABLE GovProject ADD COLUMN LastMachineCodeUpdate DATETIME2 NULL;
 
 -- 添加索引
 CREATE INDEX IDX_GovProject_MachineCode ON GovProject(MachineCode);
 CREATE INDEX IDX_GovProject_AuthToken ON GovProject(AuthToken);
-CREATE INDEX IDX_GovProject_AuthStatus ON GovProject(AuthStatus);
 ```
 
 #### 2.4 新增授权码激活代理 API
@@ -524,11 +530,13 @@ public class UrbanAuthService
 |-------|------|------|
 | MachineCode | `NVARCHAR(128)` | 绑定的机器码（新增） |
 | AuthToken | `UNIQUEIDENTIFIER` | 授权令牌（新增） |
-| AuthBeginDate | `DATETIME2` | 授权开始时间（新增） |
-| AuthEndDate | `DATETIME2` | 授权结束时间（新增） |
-| AuthStatus | `INT` | 授权状态（新增） |
-| AuthType | `INT` | 授权类型（新增） |
 | LastMachineCodeUpdate | `DATETIME2` | 机器码更新时间（新增） |
+| AuthEndTime | `DATETIME2` | 授权结束时间（已有，保留） |
+
+**说明**：
+- 授权状态、授权类型等管理字段由 BasePlatform 的 Material_MachineCode 表负责
+- UrbanManagement.GovProject 仅需存储机器码绑定信息和授权令牌
+- 授权验证逻辑由 BasePlatform.PublicApi 处理，UrbanManagement 作为代理层转发
 
 ### MaterialClient.LicenseInfo
 

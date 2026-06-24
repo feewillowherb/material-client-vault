@@ -63,18 +63,26 @@ public class GovProject : Entity<Guid>
 {
     // 现有字段...
     public string? BuildLicenseNo { get; set; }       // 建设许可证号（保留，作为 LicenseKey）
-    // public string? FdBuildLicenseNo { get; set; }   // 对接码（删除）
+    public string? FdBuildLicenseNo { get; set; }     // 对接码（保留）
+    public DateTime? AuthEndTime { get; set; }        // 授权结束时间（已有）
 
     // 新增机器码授权字段
     public string? MachineCode { get; set; }           // 绑定的机器码
     public string? AuthToken { get; set; }             // 授权令牌
-    public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
-    public DateTime? AuthEndDate { get; set; }         // 授权结束时间
-    public int? AuthStatus { int? get; set; }               // 授权状态
-    public int? AuthType { get; set; }                 // 授权类型
     public DateTime? LastMachineCodeUpdate { get; set; } // 机器码更新时间
 }
 ```
+
+**字段说明**：
+- `MachineCode` - 客户端机器码，用于绑定特定设备
+- `AuthToken` - BasePlatform 授权令牌（GUID），由 BasePlatform 返回
+- `LastMachineCodeUpdate` - 机器码最后更新时间，用于追踪变更
+- `AuthEndTime` - 现有字段，表示授权结束时间
+
+**不需要的字段**（由 BasePlatform 的 Material_MachineCode 表管理）：
+- ~~`AuthStatus`~~ - 授权状态
+- ~~`AuthBeginDate`~~ - 授权开始时间
+- ~~`AuthType`~~ - 授权类型（离线/在线）
 
 **客户端 LicenseInfo 结构**（保持不变）：
 - 客户端使用 `LicenseKey`（对应 BuildLicenseNo）进行验证

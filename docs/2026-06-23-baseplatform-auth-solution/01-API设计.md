@@ -27,16 +27,16 @@ public class GovProject : Entity<Guid>
 // 扩展后的 UrbanManagement.GovProject 实体
 public class GovProject : Entity<Guid>
 {
+    // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号（保留）
+    public string? BuildLicenseNo { get; set; }        // 建设许可证号
+    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
+    public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
     // ===== 新增：机器码授权字段 =====
     public string? MachineCode { get; set; }           // 当前绑定的机器码
     public string? AuthToken { get; set; }             // 授权令牌（GUID）
-    public DateTime? AuthBeginDate { get; set; }       // 授权开始时间
-    public DateTime? AuthEndDate { get; set; }         // 授权结束时间
-    public int? AuthStatus { get; set; }               // 授权状态 0=失效, 1=正常
-    public int? AuthType { get; set; }                 // 授权类型 0=离线, 1=在线
     public DateTime? LastMachineCodeUpdate { get; set; } // 机器码最后更新时间
 }
 ```
@@ -46,14 +46,16 @@ public class GovProject : Entity<Guid>
 | 字段 | 变更 | 说明 |
 |-----|------|------|
 | BuildLicenseNo | **保留** | 建设许可证号，业务标识 |
-| FdBuildLicenseNo | **删除** | 对接码，被 MachineCode 替代 |
+| FdBuildLicenseNo | **保留** | 对接码（保持兼容） |
+| AuthEndTime | **保留** | 授权结束时间（已有字段） |
 | MachineCode | **新增** | 机器码绑定 |
 | AuthToken | **新增** | BasePlatform 授权令牌 |
-| AuthBeginDate | **新增** | 授权开始时间 |
-| AuthEndDate | **新增** | 授权结束时间 |
-| AuthStatus | **新增** | 授权状态 |
-| AuthType | **新增** | 授权类型（离线/在线） |
 | LastMachineCodeUpdate | **新增** | 机器码更新时间 |
+
+**不需要的字段**：
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理
+- ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
+- ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理
 
 ## 3. BasePlatform.PublicApi 接口（UrbanManagement 调用）
 
