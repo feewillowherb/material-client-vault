@@ -4,7 +4,7 @@
 > **创建日期**：2026-06-24  
 > **状态**：拟稿  
 > **范围**：**仅** `UrbanManagement`（ABP 城管服务端）  
-> **不在范围**：BasePlatform 库表/UI（→ [02](./02-BasePlatform实施拟稿提案.md)）、BasePlatform JWT 签发实现（→ [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）、MaterialClient.Urban
+> **不在范围**：BasePlatform 库表/UI（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、BasePlatform JWT 签发实现（→ [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）、MaterialClient.Urban
 
 **前置**：[01-解决方案.md](./01-解决方案.md) · [05-联合发版说明.md](./05-联合发版说明.md)
 
@@ -84,7 +84,7 @@ FdBuildLicenseNo = x.FdBuildLicenseNo,
 MachineCode = x.MachineCode,
 ```
 
-**依赖**：PublicApi 已输出 `accessCode`（02 P1）；兼容期可读 `buildLicenseNo` 别名。
+**依赖**：PublicApi 已输出 `accessCode`、`machineCode`（02 P1）；Pull 直接映射新字段，**不**读 `buildLicenseNo`。
 
 ### 3.4 脏数据修复
 
@@ -213,7 +213,7 @@ Hub 方法 `UpdateClientLicense`：JWT 文本须由 BasePlatform 签发，Urban 
 
 | 编号 | 文档 |
 |------|------|
-| 02 | BasePlatform AccessCode |
+| 02 | [02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md) | AccessCode 分列与 ListProjects |
 | 03 | BasePlatform JWT 签发 |
 | 04 | 本文档 |
 | 05 | 联合发版 |

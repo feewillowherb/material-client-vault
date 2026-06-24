@@ -4,9 +4,9 @@
 > **创建日期**：2026-06-24  
 > **状态**：拟稿 — 待评审后进入 BasePlatform 仓库实施  
 > **范围**：**仅** `FdSoft.BasePlatform.PublicApi`（及共享 Model / Service 层签发逻辑）  
-> **不在范围**：AccessCode 库表与 `ListProjects`（→ [02](./02-BasePlatform实施拟稿提案.md)）、Urban 代理与下线（→ [04](./04-UrbanManagement迁移拟稿提案.md)）、MaterialClient.Urban
+> **不在范围**：AccessCode 库表与 `ListProjects`（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、Urban 代理与下线（→ [04](./04-UrbanManagement迁移拟稿提案.md)）、MaterialClient.Urban
 
-**前置**：[01-解决方案.md](./01-解决方案.md) · [02](./02-BasePlatform实施拟稿提案.md)（`AccessCode` 列为 Claims 数据源）· [05-联合发版说明.md](./05-联合发版说明.md)
+**前置**：[01-解决方案.md](./01-解决方案.md) · [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)（`AccessCode` 列为 Claims 数据源）· [05-联合发版说明.md](./05-联合发版说明.md)
 
 **关联 EPIC**：[00-EPIC-项目改动总览.md](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) §1.3
 
@@ -42,7 +42,7 @@
 
 | 主题 | 文档 |
 |------|------|
-| `JC_ProductAuthority.AccessCode` DDL / 迁移 | [02](./02-BasePlatform实施拟稿提案.md) |
+| `JC_ProductAuthority.AccessCode` DDL / 迁移 | [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md) |
 | Urban `GET /api/urban/auth/license-file` 代理 | [04](./04-UrbanManagement迁移拟稿提案.md) |
 | 客户端公钥分发、`LicenseInfo` 重命名 | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
 | 在线激活 `POST /api/auth/activate` | EPIC 其他条目（可后续单独立项） |
@@ -50,7 +50,7 @@
 ### 2.3 与 02 的接口约定
 
 - **硬依赖**：P2 上线前须完成 02 的 P0（`AccessCode` 列有值）；否则 Claims 中 `accessCode` 为空。
-- **软并行**：03 代码可与 02 同仓开发，联调须在 02 阶段 A 双写之后。
+- **软并行**：03 代码可与 02 同仓开发；JWT 联调须运营已在后台维护 `AccessCode`（或测试数据手工写入）。
 
 ---
 
@@ -252,7 +252,7 @@ public sealed class BasePlatformJwtTokenGenerator
 |------|------|------|
 | 00 | [00-问题分析.md](./00-问题分析.md) | 问题发现 |
 | 01 | [01-解决方案.md](./01-解决方案.md) | 全链路总方案 |
-| 02 | [02-BasePlatform实施拟稿提案.md](./02-BasePlatform实施拟稿提案.md) | AccessCode 分列 |
+| 02 | [02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md) | AccessCode 分列与 ListProjects |
 | 03 | [03-BasePlatform-JWT签发迁移拟稿提案.md](./03-BasePlatform-JWT签发迁移拟稿提案.md) | 本文档 |
 | 04 | [04-UrbanManagement迁移拟稿提案.md](./04-UrbanManagement迁移拟稿提案.md) | Urban 配合 |
 | 05 | [05-联合发版说明.md](./05-联合发版说明.md) | 联合发版 |
