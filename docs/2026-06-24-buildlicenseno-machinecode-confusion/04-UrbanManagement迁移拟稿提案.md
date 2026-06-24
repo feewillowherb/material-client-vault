@@ -30,15 +30,15 @@ UrbanManagement 侧两类迁移，**同一发版窗口、可分 PR**：
 1. EF 实体 `GovProject`：`BuildLicenseNo` 重命名为 `AccessCode`（或新列迁移后删旧列）。
 2. `GovProjectPullBackgroundWorker`：映射 `dto.AccessCode`、`dto.MachineCode`。
 3. 脏数据修复：以 BasePlatform 拉取结果为准刷新本地 `AccessCode`。
-4. 查询与验证：`GovProject.AccessCode == request.AccessCode`（替代原 `BuildLicenseNo`）。
+4. 查询与政府出站：`GovProject.AccessCode`（**不**以 verify API 做客户端门禁）。
 5. 政府出站：`payload.buildLicenseNo = govProject.AccessCode`（协议名保留）。
 
 **§B JWT**
 
 1. 删除或废弃：`UrbanLicenseGenerator`、`GovProjectLicenseAppService` 中本地签发逻辑。
 2. 新增/改造：`GET /api/urban/auth/license-file` → 调用 BasePlatform PublicApi（[03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）。
-3. SignalR `DeviceStatusHub`：推送 JWT 时 DTO 使用 `AccessCode`；payload 来自 BasePlatform 签发结果。
-4. 移除 Urban `appsettings` 中 **JWT 私钥**；不再本地签名。
+3. SignalR `DeviceStatusHub`：**可选** JWT 续期推送（非激活前置）。
+4. 移除 Urban `appsettings` 中 **JWT 私钥**；**`POST /api/urban/auth/activate`** 代理 BasePlatform（**5001**，响应 `jwtToken`）。
 
 ### 2.2 非目标
 
@@ -90,13 +90,13 @@ MachineCode = x.MachineCode,
 UPDATE Gov_Project SET AccessCode = @SyncedAccessCode, ... WHERE Id = @ProId;
 ```
 
-### 3.5 验证 API
+### 3.5 ~~验证 API~~（不实施）
 
-```csharp
-// POST /api/urban/auth/verify
-var project = await _repo.FirstOrDefaultAsync(p => p.AccessCode == request.AccessCode);
-// MachineCode 比对不变
-```
+~~`POST /api/urban/auth/verify`~~ — **废弃**。客户端以本地 JWT 验签为准（见 [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md)）。
+
+### 3.6 在线激活代理（仅 5001）
+
+**`POST /api/urban/auth/activate`** — 转发 BasePlatform `activate-urban`；响应须含 **`jwtToken`** 透传客户端。详见 [EPIC §2.4](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md)。
 
 ---
 

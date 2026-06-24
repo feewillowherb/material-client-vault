@@ -4,21 +4,41 @@
 > - **`AccessCode`**：城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）  
 > - **`MachineCode`**：设备机器码  
 > - ~~**`FdBuildLicenseNo`**~~：**已废弃**（不再计算、出站或写入 JWT）  
-> - 政府 HTTP 出站 `buildLicenseNo` 协议名可保留，**值 = AccessCode**
+> - 政府 HTTP 出站 `buildLicenseNo` 协议名可保留，**值 = AccessCode**  
+> - **JWT 适用范围**：**仅 ProductCode `5001`**（MaterialDxlt / 城管）；`5000`、`5010` 及其它产品 **不** 走 JWT，现网流程不变  
+> - 详细拟稿：[03-BasePlatform-JWT签发迁移拟稿提案](../2026-06-24-buildlicenseno-machinecode-confusion/03-BasePlatform-JWT签发迁移拟稿提案.md)
 
 ## 概述
 
 本文档作为 UrbanManagement 代理授权方案的总体 EPIC，描述所有涉及项目的改动内容。每个项目可基于此文档创建详细的 Proposal 和实施计划。
 
-**方案架构**：`MaterialClient.Urban → UrbanManagement → BasePlatform.PublicApi`
+**方案架构**：`MaterialClient.Urban → UrbanManagement → BasePlatform.PublicApi`（**仅 5001 城管链路**）
+
+**授权原则（JWT 唯一权威，仅 5001）**：
+
+1. **离线与在线均以 JWT 为唯一权威凭证**（RS256，Claims：`proId`, `proName`, `accessCode`, `machineCode`, `exp`, `jti`）。
+2. 客户端 `LicenseInfo.LatestJwtToken` 存储 JWT；`.urban` 仅为 JWT 的文件载体，导入后同样写入 `LatestJwtToken`。
+3. **启动验权**：仅本地 `StaticLicenseChecker` 验签 JWT；**不实施** `POST /api/urban/auth/verify` 等平行查库验证 API。
+4. **产品隔离**：JWT 签发、`jwtToken` 响应、`SendAuthLicense` 扩展载荷、离线下载 **仅 `productCode == 5001`**；其它产品 `SendAuthLicense` / `DownloadAuth` 等行为与现网一致。
 
 **核心目标**：
 - 在 GovProject 中扩展机器码授权字段
-- UrbanManagement 作为代理层处理授权验证
-- MaterialClient.Urban 更新 LicenseInfo（`BuildLicenseNo` → `AccessCode`）与 JWT 验证机制
-- BasePlatform.PublicApi 提供授权验证能力
-- **将 UrbanManagement 中的 JWT 授权文件签发流程移植到 BasePlatform**
-- **在 BasePlatform 中提供授权文件下载功能**
+- UrbanManagement 作为代理层转发 **5001 激活与 JWT**（不签发、不 verify）
+- MaterialClient.Urban 更新 LicenseInfo（`BuildLicenseNo` → `AccessCode`）与 JWT 验证机制（**5001**）
+- BasePlatform.PublicApi：**5001** 在线激活签发 JWT + 离线 `license-file`
+- **将 UrbanManagement 中的 JWT 签发流程移植到 BasePlatform**（**仅 5001**）
+- **在 BasePlatform 管理后台提供 5001 离线授权文件下载**（见拟稿 03）
+
+---
+
+## 5001 双路径（轻量）
+
+| 路径 | 运营/现场 | 服务端 | 客户端落库 |
+|------|-----------|--------|------------|
+| **离线** | 目标机脚本采码 → 授权页录入 `MachineCode` →「下载授权」 | `DownloadUrbanLicense` / `license-file` 签发 JWT | 导入 `.urban` → `LatestJwtToken` |
+| **在线** |「生成授权码」`SendAuthLicense` → 用户输入码 | Urban `activate` 代理 → BasePlatform 验 Redis → **签发 JWT** | 激活响应 `jwtToken` → `LatestJwtToken` |
+
+SignalR 推送 JWT 为 **可选增强**（续期/换发），**不是**在线激活获得 JWT 的前置条件。
 
 ---
 
@@ -30,59 +50,64 @@
 
 **改动内容**：
 
-#### 1.1 授权码验证 API（已有，无需改动）
-- **接口**：`POST /api/AuthClientLicense/GetAuthClientLicense`
-- **当前能力**：验证授权码，返回授权信息
-- **数据模型**：
-  ```csharp
-  public class LicenseRequestDto
-  {
-      public string? ProductCode { get; set; }  // 产品代码
-      public string? Code { get; set; }          // 授权码
-  }
-  ```
+#### 1.1 授权码验证 API（已有，5001 在线激活扩展）
 
-#### 1.2 机器码验证 API（可选新增）
-- **接口**：`POST /api/auth/verify`
-- **描述**：验证机器码是否与授权匹配
-- **请求参数**：
-  ```json
-  {
-    "productCode": "UrbanManagement",
-    "authToken": "GUID-AUTH-TOKEN",
-    "machineCode": "MACHINE-CODE-12345"
-  }
-  ```
-- **响应**：
-  ```json
-  {
-    "success": true,
-    "data": {
-      "isValid": true,
-      "authStatus": 1,
-      "authEndDate": "2026-12-31T23:59:59",
-      "machineCodeMatch": true
-    }
-  }
-  ```
+- **接口**：`POST /api/AuthClientLicense/GetAuthClientLicense`（现网）；**5001 在线**建议扩展或新增 `POST /api/auth/activate-urban`（名称可评审）
+- **现网能力**（**所有产品**）：验证 Redis 一次性授权码，返回授权信息 JSON 字符串
+- **5001 扩展**（**仅 5001**）：验码成功后  
+  1. 以请求 `machineCode` 回写 `JC_ProductAuthority.MachineCode`（在线激活绑定）  
+  2. 调用共用 `ILicenseFileAppService` 签发 JWT  
+  3. 响应增加 **`jwtToken`**
+- **非 5001**：保持现网返回结构，**不**签发、**不**返回 `jwtToken`
 
-#### 1.3 JWT 授权文件生成与下载 API（新增，从 UrbanManagement 移植）
+**在线激活请求**（Urban 代理转发，仅 5001）：
 
-**背景**：将 UrbanManagement 中的 JWT 签发流程移植到 BasePlatform，统一授权文件签发。
+```json
+{
+  "productCode": "5001",
+  "code": "1234",
+  "machineCode": "MACHINE-CODE-12345"
+}
+```
+
+**5001 在线激活响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "jwtToken": "<JWT>",
+    "proId": "project-guid",
+    "proName": "项目名称",
+    "accessCode": "...",
+    "authEndDate": "2026-12-31T23:59:59"
+  }
+}
+```
+
+#### ~~1.2 机器码验证 API~~（不实施）
+
+~~`POST /api/auth/verify`~~ — **废弃**。JWT 为准后，日常验权由客户端本地验签完成，无需平行 verify API。
+
+#### 1.2 JWT 授权文件生成与下载 API（新增，仅 5001，从 UrbanManagement 移植）
+
+**背景**：将 UrbanManagement 的 JWT 签发迁入 BasePlatform，**仅服务 ProductCode 5001**。
 
 **接口**：`GET /api/auth/license-file`
 
-**描述**：生成并下载 JWT 授权文件（.urban 文件）
+**描述**：生成并下载 JWT 授权文件（`.urban`）
 
 **请求参数**：
 ```json
 {
-  "productCode": "UrbanManagement",
+  "productCode": "5001",
   "machineCode": "MACHINE-CODE-12345",
   "proId": "project-guid",
   "authEndDate": "2026-12-31T23:59:59"
 }
 ```
+
+**门禁**：`productCode != 5001` 时 **4xx**；库中 `MachineCode` 为空时 **4xx**（须先录入现场脚本机器码）。
 
 **响应**：
 ```
@@ -113,7 +138,7 @@ public class LicenseFileResponseDto
 {
     public string JwtToken { get; set; }
     public string ProId { get; set; }
-    public string ProName { get; set; set; }
+    public string ProName { get; set; }
     public DateTime AuthEndDate { get; set; }
 }
 ```
@@ -158,7 +183,15 @@ public class BasePlatformJwtTokenGenerator
 }
 ```
 
-> **说明**：此功能将 UrbanManagement 的 `UrbanLicenseGenerator` 服务移植到 BasePlatform，使 BasePlatform 成为统一的授权文件签发中心。
+> **说明**：`ILicenseFileAppService` / `BasePlatformJwtTokenGenerator` 供 **离线下载**、**在线激活（5001）**、Urban `license-file` 代理共用。详见 [03 拟稿](../2026-06-24-buildlicenseno-machinecode-confusion/03-BasePlatform-JWT签发迁移拟稿提案.md)。
+
+#### 1.3 其它产品（非 5001）
+
+| ProductCode | 授权方式 | 本 EPIC JWT 改动 |
+|-------------|----------|------------------|
+| **5000** MaterialClient | `DownloadAuth` → `mlic.lic`；`SetCorpAuthMachineCode` | **不涉及** |
+| **5010** 等其它 | 现网 `SendAuthLicense` / `DownloadAuth` | **不涉及 JWT** |
+| **5001** MaterialDxlt | JWT 离线 + 在线 | **本 EPIC 范围** |
 
 ---
 
@@ -240,80 +273,54 @@ CREATE INDEX IDX_GovProject_MachineCode ON GovProject(MachineCode);
 CREATE INDEX IDX_GovProject_AuthToken ON GovProject(AuthToken);
 ```
 
-#### 2.4 新增授权码激活代理 API
+#### 2.4 授权码激活代理 API（仅 5001）
 
 **接口**：`POST /api/urban/auth/activate`
 
-**描述**：MaterialClient.Urban 通过此接口激活授权
+**描述**：MaterialClient.Urban（**5001**）在线激活；Urban **纯代理**，不签发 JWT。
 
 **请求参数**：
 ```json
 {
-  "code": "ONE-TIME-AUTH-CODE",
+  "code": "1234",
   "machineCode": "MACHINE-CODE-12345"
 }
 ```
 
-> **注意**：客户端在激活时不知道 ProId，ProId 是服务器端根据授权码匹配后返回的。
+> **注意**：客户端在激活时不知道 ProId；`productCode` 固定为 **5001**（Urban 转发时写入）。
 
 **响应**：
 ```json
 {
   "success": true,
   "data": {
-    "authToken": "GUID-AUTH-TOKEN",
+    "jwtToken": "<JWT>",
     "authEndDate": "2026-12-31T23:59:59",
     "proId": "project-guid",
-    "proName": "项目名称"
-  }
-}
-```
-
-**实现逻辑**：
-1. 接收授权码和机器码
-2. 调用 BasePlatform.PublicApi `/api/AuthClientLicense/GetAuthClientLicense`
-3. 从响应中获取 ProId
-4. 更新本地 GovProject（写入 MachineCode、AuthToken 等）
-5. 返回激活结果给客户端
-
-#### 2.3 新增本地验证 API
-
-**接口**：`POST /api/urban/auth/verify`
-
-**描述**：MaterialClient.Urban 通过此接口验证授权
-
-**请求参数**：
-```json
-{
-  "accessCode": "ACCESS-CODE-VALUE",
-  "machineCode": "MACHINE-CODE-12345"
-}
-```
-
-**响应**：
-```json
-{
-  "success": true,
-  "data": {
-    "isValid": true,
-    "proId": "project-guid",
     "proName": "项目名称",
-    "authEndDate": "2026-12-31T23:59:59"
+    "accessCode": "..."
   }
 }
 ```
 
 **实现逻辑**：
-1. 根据 **AccessCode** 查找 GovProject
-2. 检查授权状态和过期时间
-3. 验证机器码是否匹配
-4. 返回验证结果
+1. 接收授权码、客户端上报的 `machineCode`
+2. 转发 BasePlatform（`activate-urban` 或扩展后的验码接口），`productCode = 5001`
+3. BasePlatform：验 Redis 一次性码 → 回写 `MachineCode` → **签发 JWT**
+4. 更新本地 `GovProject`（`MachineCode`、`AuthToken` 等副本）
+5. 将 **`jwtToken`** 原样返回客户端
 
-#### 2.4 SignalR DeviceStatusHub 扩展（推送最新 JWT）
+#### ~~2.5 本地验证 API~~（不实施）
+
+~~`POST /api/urban/auth/verify`~~ — **废弃**。启动与运行期以客户端 **本地 JWT 验签** 为准。
+
+#### 2.5 SignalR DeviceStatusHub（可选，JWT 续期）
 
 **Hub 方法**：`UpdateClientLicense`
 
-**描述**：向客户端推送最新的授权 JWT
+**描述**：向客户端推送 **更新** 的 JWT（续期、换发）；**不替代**激活响应中的首次 `jwtToken`。
+
+**优先级**：**中**（可选）；在线激活成功后客户端应已持有 `LatestJwtToken`。
 
 **推送数据**：
 ```csharp
@@ -347,7 +354,7 @@ public class LicenseInfo : Entity<Guid>
     public DateTime AuthEndTime { get; set; }
     public string? ProName { get; set; }
     public string? AccessCode { get; set; }
-    public string? LatestJwtToken { get; set; }  // 服务器推送的最新 JWT
+    public string? LatestJwtToken { get; set; }  // 权威 JWT（在线激活或导入 .urban）
     public string MachineCode { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -386,8 +393,10 @@ public class UrbanAuthService
             return false;
         }
 
-        // 从响应中获取 ProId 并更新本地 LicenseInfo
+        // 激活成功：持久化 JWT（权威凭证）及元数据
+        await _licenseService.SaveLatestJwtTokenAsync(response.Data.JwtToken);
         await _licenseService.SyncProjectFieldsFromServerAsync(
+            response.Data.ProId,
             response.Data.ProName,
             response.Data.AccessCode ?? "",
             response.Data.AuthEndDate
@@ -400,149 +409,45 @@ public class UrbanAuthService
 }
 ```
 
-#### 3.3 启动时验证流程（使用现有 JWT 验证）
+#### 3.3 启动时验证流程（JWT 唯一权威）
 
-**现有验证流程**（保持不变）：
-- 使用 `StaticLicenseChecker` 验证 JWT 签名
-- 优先使用 `LatestJwtToken`（服务器通过 SignalR 推送）
-- 若为 null，则回退到 .urban 文件
-- 验证过期时间 `AuthEndTime` 和机器码匹配
+- 使用 `StaticLicenseChecker` 验证 **JWT** 签名与 Claims（`machineCode`、`exp` 等）
+- 优先使用 `LatestJwtToken`；若为 null 则回退到已导入的 `.urban` 文件
+- **不**调用 `POST /api/urban/auth/verify` 作为启动门禁
 
-**无需改动**，现有验证机制已经满足需求。
+离线导入与在线激活 **共用同一套** JWT 验签逻辑。
 
 ---
 
-### 4. BasePlatform.WebApi（可选）
+### 4. BasePlatform 管理后台（FdSoft.BasePlatform）
 
-**项目路径**：`FdSoft.BasePlatform.WebApi` 或 BasePlatform 管理后台
+**项目路径**：`FdSoft.BasePlatform`（Web 宿主）
 
-**改动内容**：
+**改动内容**（详见 [02](../2026-06-24-buildlicenseno-machinecode-confusion/02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)、[03](../2026-06-24-buildlicenseno-machinecode-confusion/03-BasePlatform-JWT签发迁移拟稿提案.md)）：
 
-#### 4.1 授权码生成界面（新增或扩展现有功能）
+#### 4.1 生成授权码（`SendAuthLicense`，现网保留）
 
-**功能**：
-- 管理员输入项目信息和机器码
-- 生成一次性授权码
-- 写入 Redis
+- **所有产品**：现网逻辑保留（Redis 一次性码、48h TTL）
+- **仅 5001**：Redis 载荷 **可增加** `AccessCode`（供激活后 JWT Claims）；**非 5001 载荷结构与现网完全一致**
 
-**实现要点**：
-- 授权码格式：`AuthClientLicense:{productCode}:{code}`
-- 设置 TTL（如 24 小时）
-- 支持重新生成
+#### 4.2 离线下载（仅 5001，新增）
+
+- `GET .../DownloadUrbanLicense`：签发 JWT → `license.urban`
+- **前置**：库中 `MachineCode` 已录入（现场脚本）
+- **5000 / 其它**：仍走 `DownloadAuth`（`mlic.lic` 等），**不变**
 
 ---
 
 ## 关键技术决策
 
-### 1. BasePlatform 不回写 MachineCode
+### 1. 5001 在线激活时 BasePlatform 回写 MachineCode
 
-**核心决策**：BasePlatform.PublicApi 的授权码验证 API **不支持回写 MachineCode**，由 UrbanManagement 在 GovProject 中自行管理。
+**决议**（**仅 ProductCode 5001**）：在线激活验码成功后，BasePlatform **回写** `JC_ProductAuthority.MachineCode`（取客户端上报值），并签发 JWT。  
+**非 5001** 产品：不改动现网 `GetAuthClientLicense` 行为。
 
----
-
-#### 1.1 决策背景
-
-**技术约束**：
-- BasePlatform 现有的 JC_ProductAuthority 表设计为授权中心的全局视图
-- 该表由 BasePlatform.WebApi 通过管理界面操作，不暴露给外部 API 写入
-- 若开放写权限，需重新设计 BasePlatform 的安全模型和 API 权限体系
-
-**架构选择**：
-- UrbanManagement 作为代理层，已有 GovProject 表存储项目级数据
-- GovProject 是 Urban 领域的核心实体，天然适合管理 MachineCode
-- 保持 BasePlatform 为只读验证服务，简化跨系统交互
+UrbanManagement 仍在 `GovProject` 保留 `MachineCode` 副本，供 Pull / 政府出站等 Urban 域逻辑使用。
 
 ---
-
-#### 1.2 架构原理
-
-**责任分离**：
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      BasePlatform 平台                            │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  JC_ProductAuthority（授权中心全局视图）                    │ │
-│  │  - 授权状态全局汇总                                         │ │
-│  │  - AuthToken 管理                                          │ │
-│  │  - 授权过期时间管理                                         │ │
-│  │  - 由 BasePlatform.WebApi 管理（不暴露写 API）              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                                ↑
-                                │ 只读验证
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                    UrbanManagement 代理层                        │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  GovProject（项目级机器码权威来源）                          │ │
-│  │  - MachineCode（唯一权威存储）                               │ │
-│  │  - AuthToken（来自 BasePlatform 的副本）                     │ │
-│  │  - LastMachineCodeUpdate（更新追踪）                         │ │
-│  │  - 由 UrbanManagement 代理 API 写入                          │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**数据流向**：
-1. **激活时**：UrbanManagement 收到客户端激活请求 → 调用 BasePlatform 验证 → BasePlatform 返回授权信息 → UrbanManagement 在本地 GovProject 写入 MachineCode
-2. **验证时**：UrbanManagement 使用本地 GovProject.MachineCode 进行比对 → 不需要调用 BasePlatform
-
----
-
-#### 1.3 权衡分析
-
-**优点**：
-
-| 优点 | 说明 |
-|-----|------|
-| **单一数据源** | GovProject.MachineCode 是唯一权威来源，避免数据同步冲突 |
-| **简化 API** | BasePlatform API 保持只读，无需开放写权限 |
-| **降低耦合** | UrbanManagement 可以独立管理项目数据，不依赖 BasePlatform 的写入接口 |
-| **性能优化** | 验证时无需跨系统调用，直接比对本地数据 |
-| **安全隔离** | BasePlatform 不暴露写 API，减少攻击面 |
-
-**缺点与缓解**：
-
-| 缺点 | 缓解措施 |
-|-----|---------|
-| **BasePlatform 无全局 MachineCode 视图** | UrbanManagement 可定期通过管理界面同步数据到 BasePlatform |
-| **数据一致性风险** | GovProject 是权威来源，BasePlatform.JC_ProductAuthority 作为副本即可 |
-| **运维复杂度增加** | 需明确 GovProject 为主要数据源，建立运维规范 |
-
----
-
-#### 1.4 替代方案对比
-
-**方案 A（当前）**：UrbanManagement 管理 MachineCode
-- ✅ 单一数据源，无同步冲突
-- ✅ API 简化，BasePlatform 只读
-- ❌ BasePlatform 缺乏全局视图
-
-**方案 B**：BasePlatform 回写 MachineCode
-- ✅ BasePlatform 有全局机器码视图
-- ✅ 授权中心数据完整
-- ❌ 需开放 BasePlatform 写 API（安全风险）
-- ❌ 两个系统都可写入同一数据（同步冲突）
-- ❌ UrbanManagement 需等待 BasePlatform 写入完成（延迟增加）
-
-**方案 C**：双向同步
-- ✅ 两边都有完整数据
-- ❌ 需要复杂的同步机制
-- ❌ 数据冲突解决困难
-- ❌ 运维成本高
-
----
-
-#### 1.5 实施建议
-
-**当前方案实施要点**：
-1. **明确数据所有权**：在文档中明确 GovProject.MachineCode 为唯一权威来源
-2. **API 设计**：BasePlatform.PublicApi 保持只读验证接口
-3. **运维规范**：如需全局视图，通过 UrbanManagement → BasePlatform.WebApi 的管理界面同步
-
-**未来扩展路径**：
-- 如需 BasePlatform 拥有全局 MachineCode 视图，可通过 UrbanManagement 提供的查询接口定期同步
-- 或由 UrbanManagement 定期通过管理界面更新 BasePlatform.JC_ProductAuthority 表
 
 ### 2. 客户端激活时不提供 ProId
 
@@ -553,78 +458,71 @@ public class UrbanAuthService
 - ProId 由服务器端根据授权码匹配后返回
 - UrbanManagement 根据 BasePlatform 返回的 ProId 更新 GovProject
 
-### 3. 授权验证使用 AccessCode 而非 ProId
+### 3. JWT 为唯一权威凭证（废弃平行 verify）
 
-**原因**：
-- MaterialClient.Urban 以 **AccessCode**（原误称 BuildLicenseNo）作为项目接入标识
-- 需要保持向后兼容（迁移期 JWT 可同时携带 `accessCode` 与废弃 claim）
+**决议**：
+- 离线与在线均以 BasePlatform 签发的 JWT 为权威；客户端 `LatestJwtToken` / `.urban` 为存储载体
+- **不实施** `POST /api/auth/verify`、`POST /api/urban/auth/verify`
+- Claims 使用 **`accessCode`**（非废弃的 `fdBuildLicenseNo`）
 
-**解决方案**：
-- UrbanManagement 验证接口使用 **`accessCode`** 查找 GovProject
-- 客户端调用时传递 **AccessCode** 而非 `ProId`
+### 4. JWT 推送机制（可选）
 
-### 4. JWT 推送机制
+**现状**：MaterialClient 已有 `StaticLicenseChecker`。
 
-**现状**：MaterialClient 已有完整的 JWT 验证机制（StaticLicenseChecker）。
+**增强**（中优先级，可选）：
+- UrbanManagement 通过 SignalR 推送 **更新** 的 JWT
+- 客户端覆盖 `LicenseInfo.LatestJwtToken`
+- **在线激活成功时须已写入 JWT**；Hub 仅用于续期，非首次激活前置
 
-**增强**：
-- UrbanManagement 通过 SignalR DeviceStatusHub 推送最新 JWT
-- 客户端更新 LicenseInfo.LatestJwtToken
-- 启动时优先使用 LatestJwtToken，回退到 .urban 文件
+### 5. 产品隔离（非 5001 零改动）
+
+| 能力 | 5001 | 5000 / 5010 / 其它 |
+|------|------|----------------------|
+| JWT 签发 | ✅ | ❌ |
+| `SendAuthLicense` Redis 加 `AccessCode` | ✅ 可选 | ❌ 保持现网 JSON |
+| `DownloadUrbanLicense` | ✅ | ❌ 仍 `DownloadAuth` |
+| 在线激活返回 `jwtToken` | ✅ | ❌ 现网验码逻辑 |
 
 ---
 
 ## 实施优先级
 
-### 高优先级（核心功能）
+### 高优先级（核心功能，5001）
 
-1. **UrbanManagement GovProject 扩展**
-   - 数据库迁移脚本
-   - 实体字段添加
-   - 索引创建
-
-2. **UrbanManagement 授权代理 API**
-   - `/api/urban/auth/activate` - 授权激活
-   - `/api/urban/auth/verify` - 本地验证
-
-3. **MaterialClient.Urban 激活流程**
-   - 授权码激活 UI
-   - 调用 UrbanManagement API
-   - 更新本地 LicenseInfo
+1. **BasePlatform JWT 签发**（`ILicenseFileAppService`、`license-file`、`DownloadUrbanLicense`）— 见 [03 拟稿](../2026-06-24-buildlicenseno-machinecode-confusion/03-BasePlatform-JWT签发迁移拟稿提案.md)
+2. **BasePlatform 5001 在线激活**（验码 + 回写 `MachineCode` + 响应 `jwtToken`）
+3. **UrbanManagement**：`GovProject` 扩展 + `POST /api/urban/auth/activate` 代理（透传 `jwtToken`）
+4. **MaterialClient.Urban**：激活 UI → 写入 `LatestJwtToken`；启动 JWT 验签
+5. **AccessCode 分列**（02 拟稿 P0）— JWT Claims 数据源
 
 ### 中优先级（增强功能）
 
-4. **UrbanManagement SignalR 推送**
-   - DeviceStatusHub 推送最新 JWT
-   - 客户端接收并更新 LatestJwtToken
-
-5. **BasePlatform.WebApi 管理界面**
-   - 授权码生成功能
-   - Redis 管理
+6. **UrbanManagement SignalR**（JWT 续期推送，可选）
+7. **5000 等产品回归** — 确认 `SendAuthLicense` / `DownloadAuth` 无行为变化
 
 ### 低优先级（可选优化）
 
-6. **机器码获取脚本**
-   - 跨平台机器码生成工具
-   - 客户端部署工具
+8. **机器码采集脚本**（5001 离线前置）
 
 ---
 
 ## 接口契约总结
 
-### UrbanManagement → BasePlatform.PublicApi
+### UrbanManagement → BasePlatform.PublicApi（5001）
 
 | 接口 | 方法 | 用途 |
 |-----|------|------|
-| `/api/AuthClientLicense/GetAuthClientLicense` | POST | 验证授权码（已有） |
+| `/api/AuthClientLicense/GetAuthClientLicense` | POST | 验码（现网；非 5001） |
+| `/api/auth/activate-urban`（或扩展验码接口） | POST | **5001** 在线激活：验码 + 写 `MachineCode` + **`jwtToken`** |
+| `/api/auth/license-file` | GET | **5001** JWT 文件（离线 / Urban 代理） |
 
-### MaterialClient.Urban → UrbanManagement
+### MaterialClient.Urban → UrbanManagement（5001）
 
 | 接口 | 方法 | 用途 |
 |-----|------|------|
-| `/api/urban/auth/activate` | POST | 授权码激活（新增） |
-| `/api/urban/auth/verify` | POST | 本地验证（新增） |
-| SignalR DeviceStatusHub | Hub | 推送最新 JWT（已有，需扩展） |
+| `/api/urban/auth/activate` | POST | 授权码激活（响应含 **`jwtToken`**） |
+| ~~`/api/urban/auth/verify`~~ | — | **不实施** |
+| SignalR DeviceStatusHub | Hub | JWT **续期**推送（可选） |
 
 ---
 
@@ -641,13 +539,13 @@ public class UrbanAuthService
 | AuthEndTime | `DATETIME2` | 授权结束时间（已有，保留） |
 
 **说明**：
-- 授权状态、授权类型等管理字段由 BasePlatform 的 JC_ProductAuthority 表负责
-- UrbanManagement.GovProject 仅需存储机器码绑定信息和授权令牌
-- 授权验证逻辑由 BasePlatform.PublicApi 处理，UrbanManagement 作为代理层转发
+- 授权状态、过期等以 BasePlatform `JC_ProductAuthority` 与 JWT `exp` 为准
+- UrbanManagement `GovProject` 存项目级副本（Pull、政府出站等）
+- 客户端日常验权：**本地 JWT**，不依赖 Urban verify API
 
 ### MaterialClient.LicenseInfo
 
-**变更**：属性 **`BuildLicenseNo` 重命名为 `AccessCode`**；`LatestJwtToken` 等其余字段不变。
+**变更**：`BuildLicenseNo` → **`AccessCode`**；激活/导入须写入 **`LatestJwtToken`**（权威 JWT）。
 
 ---
 
@@ -655,35 +553,34 @@ public class UrbanAuthService
 
 | 风险 | 影响 | 缓解措施 |
 |-----|------|---------|
-| BasePlatform 不回写 MachineCode | 无法在 BasePlatform 端统一管理机器码 | UrbanManagement 在 GovProject 中自行管理 |
-| 客户端不知道 ProId | 无法在激活时指定项目 | ProId 由服务器端根据授权码匹配后返回 |
-| AccessCode 唯一性 | 接入码应在 GovProject 内可唯一查找 | 为 AccessCode 建索引；Pull 同步与 BasePlatform 对齐 |
-| 机器码不稳定 | 硬件变更导致授权失效 | 提供机器码重新绑定流程 |
+| 非 5001 误走 JWT 路径 | 破坏其它产品授权 | 全链路 `productCode == 5001` 白名单；5000 回归测试 |
+| 在线激活无 JWT | 启动无法验签 | 激活响应必须含 `jwtToken` 并写 `LatestJwtToken` |
+| 客户端不知道 ProId | 无法在激活时指定项目 | ProId 由验码后服务端返回 |
+| AccessCode 未维护 | JWT `accessCode` 为空 | 02 P0 + 签发前校验 |
+| 机器码不稳定 | 授权失效 | 运营重新录入 / 在线重新激活 |
 
 ---
 
 ## 后续步骤
 
 1. **各项目基于此 EPIC 创建详细 Proposal**
-   - BasePlatform.PublicApi：验证现有 API 能力
-   - UrbanManagement：详细实施计划
-   - MaterialClient.Urban：激活流程实现
-   - BasePlatform.WebApi：管理界面设计
+   - [02 / 03 / 04 / 05 拟稿](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)（AccessCode + JWT + Urban）
+   - MaterialClient.Urban：激活写 `LatestJwtToken`
+   - **5000 等非 5001 产品回归清单**
 
 2. **技术评审**
-   - 评审 UrbanManagement 代理架构设计
-   - 评审 GovProject 字段扩展方案
-   - 评审授权流程安全性
+   - JWT 唯一权威 + 仅 5001 产品隔离
+   - 废弃 verify API
+   - 在线激活 `jwtToken` 闭环
 
 3. **分阶段实施**
-   - 阶段一：UrbanManagement GovProject 扩展 + 代理 API
-   - 阶段二：MaterialClient.Urban 激活流程
-   - 阶段三：SignalR 推送机制增强
-   - 阶段四：BasePlatform.WebApi 管理界面
+   - 阶段一：02 P0（`AccessCode`）+ 03 JWT 签发与离线下载
+   - 阶段二：5001 在线激活 + Urban 代理 + 客户端 `LatestJwtToken`
+   - 阶段三（可选）：SignalR JWT 续期
 
 ---
 
-**文档版本**：1.0
-**创建日期**：2026-06-23
-**最后更新**：2026-06-24（AccessCode 语义对齐）
-**状态**：待各项目创建详细 Proposal
+**文档版本**：1.1  
+**创建日期**：2026-06-23  
+**最后更新**：2026-05-29（JWT 唯一权威、仅 5001、废弃 verify、在线 jwtToken）  
+**状态**：已与 confusion 系列 03 拟稿对齐；待各仓库实施

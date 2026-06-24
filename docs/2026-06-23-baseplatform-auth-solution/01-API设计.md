@@ -1,6 +1,7 @@
 # UrbanManagement 授权方案设计
 
-> **字段语义**：见 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。`GovProject.BuildLicenseNo` 重命名为 **`AccessCode`**。
+> **字段语义**：见 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。`GovProject.BuildLicenseNo` 重命名为 **`AccessCode`**。  
+> **JWT**：**仅 ProductCode `5001`**；**不实施** `verify` API。详见 [00-EPIC-项目改动总览.md](./00-EPIC-项目改动总览.md)。
 
 ## 1. 概述
 
@@ -105,18 +106,18 @@ UrbanManagement 通过 BasePlatform.PublicApi 调用以下接口。
 }
 ```
 
-### 3.2 机器码上报与激活 API（在线授权）
+### 3.2 在线激活 API（仅 5001，签发 JWT）
 
-**接口**：`POST /api/auth/activate`
+**接口**：`POST /api/auth/activate-urban`（名称可评审）
 
-**描述**：UrbanManagement 使用授权码激活，同时上报机器码
+**描述**：**仅 `productCode == 5001`**。验 Redis 一次性授权码，回写 `MachineCode`，签发 JWT。
 
 **请求参数**：
 
 ```json
 {
-  "productCode": "UrbanManagement",
-  "code": "ONE-TIME-AUTH-CODE",
+  "productCode": "5001",
+  "code": "1234",
   "machineCode": "MACHINE-CODE-12345"
 }
 ```
@@ -127,51 +128,26 @@ UrbanManagement 通过 BasePlatform.PublicApi 调用以下接口。
 {
   "success": true,
   "data": {
-    "authToken": "GUID-AUTH-TOKEN",
-    "authEndDate": "2026-12-31T23:59:59",
+    "jwtToken": "<JWT>",
     "proId": "project-guid",
-    "proName": "项目名称"
+    "proName": "项目名称",
+    "accessCode": "...",
+    "authEndDate": "2026-12-31T23:59:59"
   }
 }
 ```
 
 **服务端处理逻辑**：
 
-1. 验证 Redis 中的授权码
-2. 删除授权码（一次性使用）
-3. 插入/更新 `JCProductAuthority` 表（包含 MachineCode 字段）
-4. 返回授权信息给 UrbanManagement
-5. UrbanManagement 更新本地 GovProject
+1. 校验 `productCode == 5001`（否则走现网 `GetAuthClientLicense`，无 JWT）
+2. 验证 Redis 授权码并删除（一次性）
+3. 回写 `JC_ProductAuthority.MachineCode`
+4. `ILicenseFileAppService` 签发 JWT
+5. UrbanManagement 更新 `GovProject` 副本并透传 `jwtToken` 给客户端
 
-### 3.3 在线验证 API
+### ~~3.3 在线验证 API~~（不实施）
 
-**接口**：`POST /api/auth/verify`
-
-**描述**：UrbanManagement 在线验证授权有效性
-
-**请求参数**：
-
-```json
-{
-  "productCode": "UrbanManagement",
-  "authToken": "GUID-AUTH-TOKEN",
-  "machineCode": "MACHINE-CODE-12345"
-}
-```
-
-**响应**：
-
-```json
-{
-  "success": true,
-  "data": {
-    "isValid": true,
-    "authStatus": 1,
-    "authEndDate": "2026-12-31T23:59:59",
-    "machineCodeMatch": true
-  }
-}
-```
+~~`POST /api/auth/verify`~~ — **废弃**。日常验权由客户端 **本地 JWT 验签**（`StaticLicenseChecker`）完成。
 
 ### 3.4 机器码获取脚本 API（可选）
 
@@ -344,53 +320,31 @@ public class AuthTokenGenerator
 {
   "success": true,
   "data": {
-    "authToken": "GUID-AUTH-TOKEN",
+    "jwtToken": "<JWT>",
     "authEndDate": "2026-12-31T23:59:59",
     "proId": "project-guid",
-    "proName": "项目名称"
-  }
-}
-```
-
-### 8.2 本地验证接口
-
-**接口**：`POST /api/urban/auth/verify`
-
-**描述**：MaterialClient.Urban 通过 UrbanManagement 验证授权
-
-**请求参数**：
-
-```json
-{
-  "authToken": "GUID-AUTH-TOKEN",
-  "machineCode": "MACHINE-CODE-12345"
-}
-```
-
-**响应**：
-
-```json
-{
-  "success": true,
-  "data": {
-    "isValid": true,
-    "proId": "project-guid",
     "proName": "项目名称",
-    "authEndDate": "2026-12-31T23:59:59"
+    "accessCode": "..."
   }
 }
 ```
 
-### 8.3 授权文件获取代理接口
+> 客户端须将 **`jwtToken`** 写入 `LicenseInfo.LatestJwtToken`（见 EPIC §3.2）。
+
+### ~~8.2 本地验证接口~~（不实施）
+
+~~`POST /api/urban/auth/verify`~~ — **废弃**。启动时仅本地 JWT 验签。
+
+### 8.3 授权文件获取代理接口（仅 5001）
 
 **接口**：`GET /api/urban/auth/license-file?machineCode=xxx`
 
-**描述**：MaterialClient.Urban 通过 UrbanManagement 获取授权文件
+**描述**：代理 BasePlatform `license-file`（**5001**）
 
-**响应**：返回加密的授权文件
+**响应**：JWT 明文 `.urban`（UTF-8）
 
 ---
 
-**文档版本**：2.1  
-**最后更新**：2026-06-24（AccessCode 语义对齐）
+**文档版本**：2.2  
+**最后更新**：2026-05-29（仅 5001 JWT、在线 jwtToken、废弃 verify）
 **变更说明**：采用 UrbanManagement 代理方案，简化 GovProject 字段变更

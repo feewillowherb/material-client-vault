@@ -1,6 +1,7 @@
 # UrbanManagement 代理验证方案讨论
 
-> **字段语义**：`AccessCode` = 城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）。见 [分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。
+> **字段语义**：`AccessCode` = 城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）。见 [分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。  
+> **JWT（已定）**：**仅 ProductCode `5001`**；UrbanManagement **代理转发**，不签发 JWT；**不实施** verify API。详见 [00-EPIC-项目改动总览.md](./00-EPIC-项目改动总览.md)。
 
 ## 方案概述
 
@@ -344,72 +345,41 @@ public class UrbanAuthProxyController : AbpController
         if (project != null)
         {
             project.MachineCode = request.MachineCode;
-            project.AuthToken = basePlatformResponse.Data.AuthToken;
             project.AuthEndTime = basePlatformResponse.Data.AuthEndDate;
             project.LastMachineCodeUpdate = DateTime.UtcNow;
+            // jwtToken 由 BasePlatform 签发，Urban 仅透传，不落库 GovProject
 
             await _projectRepository.UpdateAsync(project);
         }
 
-        // 3. 返回结果
+        // 4. 返回结果（含 jwtToken）
         return ApiResultDto<ActivationResultDto>.Success(new ActivationResultDto
         {
-            AuthToken = basePlatformResponse.Data.AuthToken,
+            JwtToken = basePlatformResponse.Data.JwtToken,
             AuthEndDate = basePlatformResponse.Data.AuthEndDate,
             ProId = project?.ProId,
-            ProName = project?.ProName
+            ProName = project?.ProName,
+            AccessCode = basePlatformResponse.Data.AccessCode
         });
     }
 }
 ```
 
-### 2. 本地验证接口（基于 AccessCode）
+### ~~2. 本地验证接口~~（不实施）
+
+~~`POST /api/urban/auth/verify`~~ — **废弃**。客户端启动以 **本地 JWT 验签**（`StaticLicenseChecker` + `LatestJwtToken`）为准，UrbanManagement **不**承担平行查库验证。
+
+<details>
+<summary>历史草案（仅供参考，不实施）</summary>
 
 ```csharp
-/// <summary>
-/// 验证客户端授权（UrbanManagement 内部验证）
-/// </summary>
 [HttpPost("verify")]
-public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(
-    [FromBody] VerifyLocalRequest request)
-{
-    // 1. 根据 AccessCode 查找 GovProject
-    var project = await _projectRepository.FirstOrDefaultAsync(
-        p => p.AccessCode == request.AccessCode);
-
-    if (project == null)
-    {
-        return ApiResultDto<VerifyResultDto>.Fail("接入码不存在");
-    }
-
-    // 2. 检查授权是否过期
-    if (project.AuthEndTime.HasValue && DateTime.UtcNow > project.AuthEndTime.Value)
-    {
-        return ApiResultDto<VerifyResultDto>.Fail("授权已过期");
-    }
-
-    // 3. 验证机器码（关键步骤）
-    if (project.MachineCode != request.MachineCode)
-    {
-        _logger.LogWarning(
-            "Machine code mismatch for project {ProId}. Expected: {Expected}, Actual: {Actual}",
-            project.ProId, project.MachineCode, request.MachineCode);
-
-        return ApiResultDto<VerifyResultDto>.Fail("机器码不匹配，授权无效");
-    }
-
-    // 5. 验证通过
-    return ApiResultDto<VerifyResultDto>.Success(new VerifyResultDto
-    {
-        IsValid = true,
-        ProId = project.ProId,
-        ProName = project.ProName,
-        AuthEndDate = project.AuthEndDate
-    });
-}
+public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(...) { ... }
 ```
 
-### 3. 授权文件获取代理接口
+</details>
+
+### 3. 授权文件获取代理接口（仅 5001）
 
 ```csharp
 /// <summary>
@@ -422,7 +392,7 @@ public async Task<IActionResult> GetLicenseFileProxy([FromQuery] string machineC
     var response = await _basePlatformAuthClient.GetLicenseFileAsync(
         new GetLicenseFileRequest
         {
-            ProductCode = "UrbanManagement",
+            ProductCode = "5001",
             MachineCode = machineCode
         });
 
@@ -431,66 +401,48 @@ public async Task<IActionResult> GetLicenseFileProxy([FromQuery] string machineC
         return BadRequest(response.Message);
     }
 
-    // 2. 返回授权文件
+    // 2. 返回 JWT 明文 .urban
     return File(
-        Convert.FromBase64String(response.Data.LicenseFile),
+        Encoding.UTF8.GetBytes(response.Data.JwtToken),
         "application/octet-stream",
-        response.Data.FileName);
+        response.Data.FileName ?? "license.urban");
 }
 ```
 
-## MaterialClient.Urban 验证实现（兼容现有 LicenseInfo）
+## MaterialClient.Urban 验证实现（JWT 本地验签）
 
-### 1. 验证服务（基于 AccessCode）
+### 1. 启动验权（`StaticLicenseChecker`，不调用 verify API）
 
 ```csharp
 public class UrbanAuthService
 {
-    private readonly IUrbanManagementApi _urbanApi;
     private readonly LicenseInfo _licenseInfo;
 
-    /// <summary>
-    /// 启动时验证
-    /// </summary>
-    public async Task<bool> VerifyOnStartup()
+    public bool VerifyOnStartup()
     {
-        if (string.IsNullOrEmpty(_licenseInfo.AccessCode))
+        if (string.IsNullOrEmpty(_licenseInfo.LatestJwtToken))
         {
-            MessageBox.Show("未配置接入码，请联系管理员", "授权验证",
+            MessageBox.Show("未找到授权凭证，请激活或导入 .urban", "授权验证",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
 
         var machineCode = MachineCodeProvider.GetMachineCode();
+        var result = StaticLicenseChecker.Validate(_licenseInfo.LatestJwtToken, machineCode);
 
-        var response = await _urbanApi.VerifyLocal(new VerifyLocalRequest
+        if (!result.IsValid)
         {
-            AccessCode = _licenseInfo.AccessCode,
-            MachineCode = machineCode
-        });
-
-        // 4. 处理结果
-        if (!response.Success)
-        {
-            MessageBox.Show($"授权验证失败：{response.Message}", "错误",
+            MessageBox.Show($"授权验证失败：{result.Message}", "错误",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Application.Current.Shutdown();
             return false;
-        }
-
-        // 5. 更新本地 LicenseInfo（如果返回了新字段）
-        if (response.Data != null)
-        {
-            _licenseInfo.ProId = response.Data.ProId;
-            _licenseInfo.ProName = response.Data.ProName;
-            _licenseInfo.ExpireDate = response.Data.AuthEndDate;
         }
 
         return true;
     }
 
     /// <summary>
-    /// 在线激活
+    /// 在线激活（响应含 jwtToken）
     /// </summary>
     public async Task<bool> ActivateOnline(string authCode)
     {
@@ -509,21 +461,12 @@ public class UrbanAuthService
             return false;
         }
 
-        // 从响应中获取 ProId 并保存到本地
-        var proId = response.Data.ProId;
-        var existing = await _db.UrbanAuths.FirstOrDefaultAsync();
-        if (existing != null)
-        {
-            existing.ProId = proId;
-        }
-        else
-        {
-            await _db.UrbanAuths.AddAsync(new UrbanAuth
-            {
-                ProId = proId,
-                CreateDate = DateTime.UtcNow
-            });
-        }
+        // 写入 JWT 权威凭证
+        _licenseInfo.LatestJwtToken = response.Data.JwtToken;
+        _licenseInfo.MachineCode = machineCode;
+        _licenseInfo.ProjectId = response.Data.ProId;
+        _licenseInfo.ProName = response.Data.ProName;
+        _licenseInfo.AuthEndTime = response.Data.AuthEndDate;
         await _db.SaveChangesAsync();
 
         MessageBox.Show("激活成功！", "成功",
@@ -544,15 +487,15 @@ public class UrbanAuthService
 | 部署配置 | 需配置 BasePlatform 地址 | **仅需 UrbanManagement 地址** |
 | 网络安全 | BasePlatform 需暴露 | **BasePlatform 仅暴露给 UrbanManagement** |
 | 机器码存储位置 | BasePlatform + 客户端 | **GovProject（统一管理）** |
-| 验证方式 | 三方比对 | **双方比对（客户端 <--> UrbanManagement）** |
+| 验证方式 | 本地 JWT 验签 | **本地 JWT 验签**（代理仅激活/离线下载） |
 | 扩展性 | 好 | **中（依赖 UrbanManagement）** |
 
 ## 风险与限制
 
 ### 1. UrbanManagement 单点故障
 
-- UrbanManagement 不可用时，MaterialClient.Urban 无法验证
-- **缓解**：本地缓存 + 离线宽限期
+- UrbanManagement 不可用时，**已激活**客户端仍可凭本地 JWT 启动
+- **缓解**：激活/离线下载需 Urban 或 BasePlatform；SignalR 续期为可选
 
 ### 2. UrbanManagement 扩展性限制
 
@@ -576,5 +519,6 @@ public class UrbanAuthService
 
 ---
 
-**创建时间**：2026-06-23
+**创建时间**：2026-06-23  
+**最后更新**：2026-05-29（仅 5001 JWT、废弃 verify、在线 jwtToken）
 **方案状态**：讨论中，推荐采用

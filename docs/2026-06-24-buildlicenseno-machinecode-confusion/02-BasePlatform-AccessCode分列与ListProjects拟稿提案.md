@@ -6,7 +6,7 @@
 > **主题**：`JC_ProductAuthority` **接入码 / 机器码分列**、授权后台 UI、PublicApi **`ListProjects` 字段纠正**  
 > **范围**：`FdSoft.BasePlatform`、`FdSoft.BasePlatform.PublicApi`、`FdSoft.BasePlatform.Model`（上述主题相关改动）  
 > **不在范围**：JWT 签发（→ [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）、UrbanManagement、MaterialClient  
-> **PublicApi 契约**：**UrbanManagement 尚未上线**，`ListProjects` 等 PublicApi **允许破坏性变更**（直接移除 `buildLicenseNo`，不保留兼容别名）。
+> **JWT 范围**：本提案 **AccessCode / MachineCode 分列** 适用于 **5001、5010** 授权页；**JWT 签发、离线下载、在线 `jwtToken`** 等见 [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)，**仅 ProductCode `5001`**。`5000` 等产品 **零改动**。
 
 **前置文档**：[00-问题分析.md](./00-问题分析.md) · [01-解决方案.md](./01-解决方案.md)
 
@@ -237,7 +237,7 @@ IF EXISTS (
 | `CompanyAuthAdd` GET | 同上 |
 | `ProjectAuthAdd` POST | 持久化 `AccessCode`、`MachineCode` |
 | `CompanyAuthAdd` POST | 持久化 `AccessCode`、`MachineCode`（表单提交值分别写入对应列） |
-| `SendAuthLicense` | Redis 载荷增加 `AccessCode`（若下游需要）；`MachineCode` 保持 |
+| `SendAuthLicense` | **仅 5001**：Redis 载荷可增加 `AccessCode`；**非 5001** 载荷与现网完全一致 |
 
 **文件**：`API/ProjectAuthController.cs` — `SetCorpAuthMachineCode` 路径不变，Service 层保证不写 `AccessCode`。
 
@@ -345,6 +345,7 @@ flowchart LR
 | 5 | 运营手工补录接入码（无 SQL 洗数） | 并行 |
 | 6 | PublicApi ListProjects + DTO | 0.5d |
 | 7 | 回归：5000 物料客户端授权不受影响 | 0.5d |
+| 8 | 回归：5010 不走 JWT 路径（仍 `DownloadAuth` 等现网） | 0.5d |
 | **合计** | | **~3.5d**（不含运营补录周期） |
 
 ---

@@ -3,8 +3,8 @@
 > **文档类型**：拟稿提案（Draft Proposal）  
 > **创建日期**：2026-06-24  
 > **状态**：拟稿 — 待评审后进入 BasePlatform 仓库实施  
-> **范围**：`FdSoft.BasePlatform.PublicApi` 签发 API、`FdSoft.BasePlatform` **管理后台离线下载 UI**（共用 Service 层签发逻辑）  
-> **不在范围**：AccessCode 库表与 `ListProjects`（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、Urban 代理与下线（→ [04](./04-UrbanManagement迁移拟稿提案.md)）、MaterialClient.Urban 客户端导入
+> **范围**：`FdSoft.BasePlatform.PublicApi` 签发 API（**仅 ProductCode `5001`**）、`FdSoft.BasePlatform` 管理后台 **5001** 离线下载 UI、**5001** 在线激活 JWT 签发（共用 `ILicenseFileAppService`）  
+> **不在范围**：AccessCode 库表与 `ListProjects`（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、Urban 代理（→ [04](./04-UrbanManagement迁移拟稿提案.md)）、MaterialClient 客户端实现、**非 5001 产品**（`5000`/`5010` 等保持现网）
 
 **前置**：[01-解决方案.md](./01-解决方案.md) · [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)（`AccessCode` 列为 Claims 数据源）· [05-联合发版说明.md](./05-联合发版说明.md)
 
@@ -14,11 +14,13 @@
 
 ## 1. 提案摘要
 
-将 UrbanManagement 中的 **`UrbanLicenseGenerator`** 签发能力迁入 BasePlatform，使 **BasePlatform.PublicApi** 成为城管授权文件（`.urban` / JWT）的**唯一签发中心**。
+将 UrbanManagement 中的 **`UrbanLicenseGenerator`** 签发能力迁入 BasePlatform，使 **BasePlatform** 成为 **ProductCode 5001** 城管 JWT 的**唯一签发中心**（离线与在线）。
 
 | 项 | 决议 |
 |----|------|
-| 新 API | `GET /api/auth/license-file` |
+| **产品范围** | **仅 `5001`**；`5000`/`5010`/其它 **不**签发 JWT、**不**改 `SendAuthLicense` 现网载荷 |
+| **JWT 权威** | 离线与在线均以同一 JWT 为准；客户端 `LatestJwtToken` |
+| 新 API | `GET /api/auth/license-file`；`POST /api/auth/activate-urban`（在线，名称可评审） |
 | 签名算法 | RS256（与现网 Urban 一致） |
 | Issuer / Audience | `UrbanManagement` / `MaterialClient.Urban`（**保持不变**，避免客户端验签变更） |
 | Claims | `proId`, `proName`, **`accessCode`**, `machineCode`, `exp`, `jti` |
@@ -39,17 +41,19 @@
 3. Claims 中 **`accessCode`** 取自 `JC_ProductAuthority.AccessCode`（非 `MachineCode`，非 `buildLicenseNo`）。
 4. **不**签发 `fdBuildLicenseNo` claim（字段已废弃，见 [01](./01-解决方案.md) §Q2）。
 5. 提供集成测试：Issuer、算法、Claim 键名（**不含** `fdBuildLicenseNo` / `buildLicenseNo`）。
-6. 在 `FdSoft.BasePlatform` 管理后台为 **ProductCode 5001 / 5010** 提供离线授权文件下载（`.urban`）；**无 `MachineCode` 禁止下载**（须先由现场脚本采集并在授权页录入）。
+6. 在 `FdSoft.BasePlatform` 为 **ProductCode 5001** 提供离线 `.urban` 下载与在线激活 **`jwtToken`**；**无 `MachineCode` 禁止离线下载**。
+7. **`SendAuthLicense`**：仅 **5001** 可在 Redis 载荷中增加 `AccessCode`；其它产品载荷 **不变**。
 
 ### 2.2 非目标
 
 | 主题 | 文档 |
 |------|------|
 | `JC_ProductAuthority.AccessCode` DDL / 迁移 | [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md) |
-| Urban `GET /api/urban/auth/license-file` 代理 | [04](./04-UrbanManagement迁移拟稿提案.md) |
-| 客户端公钥分发、`LicenseInfo` 重命名 | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
-| 在线激活 `POST /api/auth/activate` | EPIC 其他条目（可后续单独立项） |
-| `fdBuildLicenseNo` / 凡东 MD5 claim | 已废弃；本提案 **不**写入 JWT（见 01 §Q2） |
+| Urban `POST /api/urban/auth/activate` 代理实现 | [04](./04-UrbanManagement迁移拟稿提案.md) |
+| MaterialClient 写入 `LatestJwtToken` | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
+| ~~`POST /api/auth/verify`~~ / ~~`POST /api/urban/auth/verify`~~ | **不实施** |
+| `fdBuildLicenseNo` / 凡东 MD5 claim | 已废弃（见 01 §Q2） |
+| **非 5001** 的 `SendAuthLicense` / `DownloadAuth` | **不改动**（02 回归） |
 
 ### 2.3 与 02 的接口约定
 
@@ -184,15 +188,15 @@ sequenceDiagram
 | 与客户端 | 与 MaterialClient.Urban 现有 JWT / `.urban` 验签逻辑一致；**`machineCode` claim 必须等于目标机脚本输出** |
 | 文件名 | `license.urban`（默认）；可选 `urban-{proId前8位}.urban` |
 
-> **取代旧行为**：现网 `DownloadAuth` 对 5001 生成 `RSA.xml`（本地 RSA 加密 XML）**不再用于城管离线授权**；5001 / 5010 改走本节的 JWT `.urban`。
+> **取代旧行为**：现网 `DownloadAuth` 对 **5001** 生成 `RSA.xml` **不再用于城管 JWT 离线授权**；**仅 5001** 走 `DownloadUrbanLicense`（JWT `.urban`）。**5010** 仍走现网 `DownloadAuth`，**不**签发 JWT。
 
 ### 5.3 与现有能力分界
 
 | 能力 | 入口 | ProductCode | 用途 | 本提案 |
 |------|------|-------------|------|--------|
 | `DownloadAuth` | `GET /BasePlatform/Auth/DownloadAuth` | 5000 等 | `mlic.lic` / 旧 `RSA.xml` | **不改**；5001 **不再走此路径** |
-| `SendAuthLicense` | `POST .../SendAuthLicense` | 5001 等 | 生成 4 位 Redis 授权码（**在线激活**） | **保留**；与离线下载按钮并列展示 |
-| **`DownloadUrbanLicense`**（拟新增） | `GET .../DownloadUrbanLicense` | **5001 / 5010** | 下载 JWT `.urban`（**离线**） | **新增** |
+| `SendAuthLicense` | `POST .../SendAuthLicense` | **5001**（在线码）；其它产品现网 | 生成 Redis 授权码 | **5001** 载荷可加 `AccessCode`；**非 5001 不变** |
+| **`DownloadUrbanLicense`** | `GET .../DownloadUrbanLicense` | **仅 5001** | 下载 JWT `.urban`（离线） | **新增** |
 
 在线激活（授权码）与离线导入（`.urban`）是两条并行链路，运营按现场是否联网选择。
 
@@ -230,15 +234,15 @@ public sealed record LicenseFileResult(
 
 - **「机器码」** 为离线下载的 **必填录入项**：运营将现场脚本输出粘贴于此并保存后，库表 `JC_ProductAuthority.MachineCode` 方有值。
 - 页面上可对机器码字段增加说明文案（拟稿）：「请在现场目标机器运行采集脚本，将结果粘贴到此处后再下载离线授权文件」。
-- **下载**仍在授权 **列表** 操作；编辑页不提供下载按钮，避免未保存即签发。
+- **下载**仍在授权 **列表** 操作（**仅 5001** 走 JWT 下载；5010 仍现网 `DownloadAuth`）。
 
 | 页面 | 文件 | 现状 | 改造 |
 |------|------|------|------|
-| 项目授权管理 | `Views/Auth/ProjectAuthManage.cshtml` | 「下载授权」按钮已注释；保留「生成授权码」 | **5001 / 5010**：`MachineCode` 已保存时恢复「下载授权」 |
-| 企业授权管理 | `Views/Auth/CompanyAuthManage.cshtml` | 已有「下载授权」 | 5001 / 5010 改链至 `DownloadUrbanLicense`；**无机器码不展示** |
-| 授权编辑 | `ProjectAuthAdd.cshtml` / `CompanyAuthAdd.cshtml` | 机器码可编辑 | 增加离线下载前置说明；保存后回列表下载 |
-| 列表脚本 | `wwwroot/BasePlatform/baseInfo/projectauthmanage.js` | `download` 事件指向 obsolete `DownloadAuth` | 5001/5010 → `DownloadUrbanLicense`；下载前可 `layer.confirm` 展示将绑定的 `MachineCode` |
-| 列表 DTO | `JCProjectService.GetProjectAuthManageList` | `IsShowDownBtn` 已对扩展产品为 true | **5001 / 5010**：**仅当** `MachineCode` 非空（且 `AccessCode` 非空）时 `IsShowDownBtn = true` |
+| 项目授权管理 | `Views/Auth/ProjectAuthManage.cshtml` | 「下载授权」已注释 | **仅 5001**：有 `MachineCode` 时恢复 JWT「下载授权」 |
+| 企业授权管理 | `Views/Auth/CompanyAuthManage.cshtml` | 已有「下载授权」 | **仅 5001** → `DownloadUrbanLicense` |
+| 授权编辑 | `ProjectAuthAdd.cshtml` / `CompanyAuthAdd.cshtml` | 机器码可编辑 | 5001 增加离线下载说明（5010 无 JWT 下载） |
+| 列表脚本 | `projectauthmanage.js` | `download` → `DownloadAuth` | **`pc == 5001`** → `DownloadUrbanLicense`；否则 `DownloadAuth` |
+| 列表 DTO | `JCProjectService` | `IsShowDownBtn` | **5001**：`AccessCode`+`MachineCode` 非空才显示 JWT 下载按钮 |
 
 ### 5.6 下载前置条件（机器码硬性门禁）
 
@@ -252,7 +256,7 @@ public sealed record LicenseFileResult(
 | 2 | `AuthStatus == 已授权` 且 `CheckStatus == 审核通过` | 「项目未授权或未审核通过」 |
 | 3 | `AuthEndTime >= 今天` | 「授权已过期」 |
 | 4 | `AccessCode` 非空 | 「请先填写接入码」 |
-| 5 | `ProductCode ∈ {5001, 5010}` | 「该产品不支持 JWT 离线下载」 |
+| 5 | `ProductCode == 5001` | 「该产品不支持 JWT 离线下载」 |
 
 与 PublicApi §4.3 校验规则对齐：Web 与 API **均** 在无 `MachineCode` 时拒绝签发。
 
@@ -267,7 +271,7 @@ public sealed record LicenseFileResult(
 [HttpGet]
 public async Task<IActionResult> DownloadUrbanLicense(int productCode, string authId, CancellationToken ct)
 {
-    if (productCode is not (5001 or 5010))
+    if (productCode != 5001)
         return BadRequest("不支持的产品类型");
 
     var auth = productAuthorityService.GetById(authId);
@@ -303,7 +307,7 @@ public async Task<IActionResult> DownloadUrbanLicense(int productCode, string au
 ```javascript
 else if (obj.event == 'download') {
     var pc = data.ProductCode;
-    if (pc == 5001 || pc == 5010) {
+    if (pc == 5001) {
         window.location.href = "/BasePlatform/Auth/DownloadUrbanLicense?AuthId="
             + data.AuthId + "&ProductCode=" + pc;
     } else {
@@ -329,6 +333,27 @@ else if (obj.event == 'download') {
 | 入参 | `authId`（库内查全量） | `proId` + `machineCode` + `productCode` + `authEndDate` |
 | 响应 | 浏览器 `File()` 下载 | stream 或 JSON（§4.1） |
 | 签发核心 | **同一** `ILicenseFileAppService` | **同一** `ILicenseFileAppService` |
+
+### 5.10 在线授权码激活（仅 5001）
+
+**流程**：运营 `SendAuthLicense`（**5001**）→ 客户端输入授权码 + 本机 `machineCode` → Urban `POST /api/urban/auth/activate` → BasePlatform **`activate-urban`**：
+
+1. 验 Redis 一次性码（`productCode=5001`）
+2. 回写 `JC_ProductAuthority.MachineCode`
+3. `ILicenseFileAppService` 签发 JWT
+4. 响应 **`jwtToken`**（Urban 透传；客户端写 `LatestJwtToken`）
+
+**门禁**：`productCode != 5001` → 走现网 `GetAuthClientLicense`，**不**返回 `jwtToken`。
+
+```json
+// POST /api/auth/activate-urban
+{ "productCode": "5001", "code": "1234", "machineCode": "..." }
+
+// 200
+{ "success": true, "data": { "jwtToken": "<JWT>", "proId": "...", "accessCode": "...", "authEndDate": "..." } }
+```
+
+**与离线共用**：同一 Generator、同一 Claims；SignalR 推送 JWT 为**可选续期**，非首次激活前置。
 
 ---
 
@@ -400,10 +425,11 @@ public sealed class BasePlatformJwtTokenGenerator
 | 1 | 移植 `UrbanLicenseGenerator` → `BasePlatformJwtTokenGenerator` + 单元测试 | 1d |
 | 2 | `ILicenseFileAppService`（授权查询 + 签发） | 0.5d |
 | 3 | PublicApi `GET /api/auth/license-file` + 鉴权 | 0.5d |
-| 4 | Web `DownloadUrbanLicense` + 列表按钮 / JS 分支 | 0.5d |
-| 5 | 与 02 联调：`AccessCode` 入 Claims；缺字段隐藏下载按钮 | 0.5d |
-| 6 | 预发对比 Urban 旧签发 JWT 结构 | 0.5d |
-| **合计** | | **~3.5d** |
+| 4 | Web `DownloadUrbanLicense`（**仅 5001**）+ JS 分支 | 0.5d |
+| 5 | **5001** 在线 `activate-urban` + `jwtToken` | 0.5d |
+| 6 | 与 02 联调；5000/5010 回归 | 0.5d |
+| 7 | 预发对比 Urban 旧签发 JWT 结构 | 0.5d |
+| **合计** | | **~4d** |
 
 可与 02 并行；**上线**见 [05](./05-联合发版说明.md) **P2**（Urban 仍可暂用旧签发直至 P4）。
 
@@ -424,8 +450,9 @@ public sealed class BasePlatformJwtTokenGenerator
 | 9 | Web：5001 已授权且 AccessCode + MachineCode 齐全 | 下载 `license.urban`，内容与 PublicApi 同 auth 一致 |
 | 10 | Web：未录入 MachineCode | 列表无下载按钮；直链 `DownloadUrbanLicense` → 4xx |
 | 11 | Web：录入脚本机器码并保存后下载 | JWT `machineCode` claim == 库表 == 脚本输出 |
-| 12 | Web：5000 下载 | 仍走 `DownloadAuth`，行为不变 |
-| 13 | Web 与 PublicApi 同一条授权 | 两次签发的 JWT Claims 一致（`jti` 除外） |
+| 12 | **5000** `SendAuthLicense` / `DownloadAuth` | 与发版前一致 |
+| 13 | **5010** 下载 | 仍 `DownloadAuth`，**无** JWT |
+| 14 | **5001** 在线激活 | 响应含 `jwtToken`，Claims 与离线下载一致 |
 
 ---
 
@@ -479,5 +506,5 @@ public sealed class BasePlatformJwtTokenGenerator
 
 ---
 
-**文档版本**：0.4（拟稿）  
-**最后更新**：2026-05-29
+**文档版本**：0.5（拟稿）  
+**最后更新**：2026-05-29（仅 5001 JWT、在线 jwtToken、废弃 verify、产品隔离）

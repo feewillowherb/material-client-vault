@@ -1,6 +1,7 @@
 # Urban BasePlatform 授权方案调研
 
-> **字段语义**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。域内使用 **`AccessCode`**；~~`FdBuildLicenseNo`~~ **已废弃**。
+> **字段语义**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。域内使用 **`AccessCode`**；~~`FdBuildLicenseNo`~~ **已废弃**。  
+> **JWT**：**仅 `5001`**；详见 [00-EPIC-项目改动总览.md](./00-EPIC-项目改动总览.md)。
 
 ## 调研文档索引
 
@@ -97,22 +98,25 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 2. **授权文件**：支持离线授权的文件生成与下载
 3. **客户端验证**：实现离线/在线双验证机制
 
-## 授权模式
+## 授权模式（5001）
 
 | 模式 | 激活方式 | 验证方式 | 适用场景 |
 |-----|---------|---------|---------|
-| 离线授权 | 导入授权文件 | 本地机器码比对 | 网络隔离环境 |
-| 在线授权 | 输入授权码 | 定期服务器验证 | 有网络环境 |
+| 离线授权 | 导入 JWT `.urban` | **本地 JWT 验签** | 网络隔离环境 |
+| 在线授权 | 输入授权码 → 响应 `jwtToken` | **本地 JWT 验签** | 有网络环境 |
 
-## 关键验证规则（UrbanManagement 代理模式）
+> `5000` / `5010` 不走 JWT，现网 `DownloadAuth` 等流程不变。
 
-**启动时验证**：客户端使用 LicenseInfo.`AccessCode` + 当前机器码调用 UrbanManagement API
-- UrbanManagement 根据 **`AccessCode`** 查找 GovProject
-- UrbanManagement 验证：当前机器码 == GovProject.MachineCode
+## 关键验证规则（5001，JWT 本地验签）
 
-**任一不匹配** → 授权失效 → 关闭程序
+**启动时验证**：
+- 读取 `LicenseInfo.LatestJwtToken`
+- `StaticLicenseChecker` 验签（含 `machineCode`、过期 Claims）
+- **不**调用 `POST /api/urban/auth/verify`
 
-> **说明**：客户端 JWT / LicenseInfo 以 **`AccessCode`** 作为项目接入标识。UrbanManagement 负责授权验证和机器码管理。详见 [01-解决方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。
+**任一验签失败** → 授权失效 → 关闭程序
+
+> 在线激活与离线下载经 UrbanManagement 代理 BasePlatform；日常门禁不依赖 Urban 在线 verify。详见 [01-解决方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。
 
 ## 实施工期估算
 
@@ -129,5 +133,5 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 ---
 
 **调研时间**：2026-06-23  
-**语义对齐**：2026-06-24（AccessCode）  
-**调研状态**：方案设计完成，待实施
+**语义对齐**：2026-06-24（AccessCode）；JWT 决议 2026-05-29  
+**调研状态**：方案设计完成，待实施（以 EPIC v1.1 为准）
