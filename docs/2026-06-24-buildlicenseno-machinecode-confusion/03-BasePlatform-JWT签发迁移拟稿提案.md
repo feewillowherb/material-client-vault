@@ -27,6 +27,7 @@
 | 数据源 | `JC_ProductAuthority` + `JC_Project`（`AccessCode` 来自 02） |
 | 离线下载 | **必须先有机器码**：目标机运行采集脚本 → 运营在授权页填入 `MachineCode` 并保存 → 列表「下载授权」→ `license.urban`（JWT 含该 `machineCode`） |
 | 共用服务 | `ILicenseFileAppService`（Web 与 PublicApi 均调用，避免双份签发逻辑） |
+| 在线详规 | §5.10 概览 · §5.11 `SendAuthLicense` · §5.12 `activate-urban` · §5.13 与 `GetAuthClientLicense` 分界 |
 
 **本提案不包含** Urban 侧代理、Hub 推送、旧签发下线（见 04）；**不包含**客户端 `.urban` 导入实现（见 EPIC）。
 
@@ -76,9 +77,7 @@
 
 ## 4. API 设计
 
-### 4.1 端点
-
-**`GET /api/auth/license-file`**
+### 4.1 `GET /api/auth/license-file`（离线 / Urban 代理拉取）
 
 **Query / Body**（与 EPIC 对齐，实现时二选一并文档化）：
 
@@ -128,6 +127,73 @@ Content-Disposition: attachment; filename="license.urban"
 3. `AuthEndDate` 不晚于库中 `AuthEndTime`。
 4. `AccessCode` 非空（02 迁移后）；为空时返回 4xx 并记日志。
 5. 库中 `MachineCode` 为空时 **4xx**（须先在管理后台录入现场脚本采集的机器码，见 §5）。
+
+### 4.4 `POST /api/auth/activate-urban`（在线激活 · 仅 5001）
+
+**调用方**：UrbanManagement 代理（终端不直连）。**与离线共用** `ILicenseFileAppService` 签发 JWT。
+
+**请求**：
+
+```json
+{
+  "productCode": "5001",
+  "code": "1234",
+  "machineCode": "MACHINE-CODE-12345"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `productCode` | 是 | **必须为 `5001`**（字符串或整型与现网惯例一致，实现时统一） |
+| `code` | 是 | 运营 `SendAuthLicense` 生成的 4 位 Redis 一次性授权码 |
+| `machineCode` | 是 | 客户端本机机器码；激活时回写 `JC_ProductAuthority.MachineCode` |
+
+**成功响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "jwtToken": "<JWT>",
+    "proId": "PROJECT-GUID",
+    "proName": "项目名称",
+    "accessCode": "CITY-2026-ABC",
+    "authEndDate": "2026-12-31T23:59:59"
+  },
+  "msg": "激活成功"
+}
+```
+
+> Urban 须将 **`jwtToken`** 原样透传客户端；客户端写入 `LicenseInfo.LatestJwtToken`（见 [04](./04-UrbanManagement迁移拟稿提案.md)、EPIC）。
+
+**服务端处理顺序**：
+
+1. `productCode != 5001` → **400**，提示走现网 `GetAuthClientLicense`（见 §5.13）
+2. 读 Redis `AuthClientLicense:{productCode}:{code}`；不存在 → **404**
+3. 反序列化 Redis 载荷，匹配 `JC_ProductAuthority`（`ProId` + `ProductCode` + 未过期 + 已授权）
+4. **删除** Redis key（一次性）
+5. `UPDATE` `JC_ProductAuthority.MachineCode = request.machineCode`
+6. `ILicenseFileAppService.BuildLicenseFileAsync`（Claims 与离线下载一致）
+7. 返回 `jwtToken` 及项目元数据
+
+**业务校验（与 §4.3 / §5.6 对齐）**：
+
+| # | 条件 | 失败 |
+|---|------|------|
+| 1 | `productCode == 5001` | 400 |
+| 2 | Redis 授权码有效 | 404 |
+| 3 | `AuthStatus == 已授权` 且审核通过 | 403 |
+| 4 | `AuthEndTime >= 今天` | 403 |
+| 5 | `AccessCode` 非空 | 400（依赖 02） |
+| 6 | `machineCode` 非空 | 400 |
+
+**错误响应（拟稿）**：
+
+```json
+{ "success": false, "msg": "授权码无效或已使用", "data": null }
+```
+
+**不实施**：`POST /api/auth/verify`；激活成功后**不**另建平行验权 API。
 
 ---
 
@@ -334,26 +400,188 @@ else if (obj.event == 'download') {
 | 响应 | 浏览器 `File()` 下载 | stream 或 JSON（§4.1） |
 | 签发核心 | **同一** `ILicenseFileAppService` | **同一** `ILicenseFileAppService` |
 
-### 5.10 在线授权码激活（仅 5001）
+### 5.10 在线授权概览（仅 5001）
 
-**流程**：运营 `SendAuthLicense`（**5001**）→ 客户端输入授权码 + 本机 `machineCode` → Urban `POST /api/urban/auth/activate` → BasePlatform **`activate-urban`**：
+在线与离线 **JWT 为同一权威凭证**；首次激活由本提案 `activate-urban` 返回 `jwtToken`，**不依赖** verify API 或 SignalR 推送。
 
-1. 验 Redis 一次性码（`productCode=5001`）
-2. 回写 `JC_ProductAuthority.MachineCode`
-3. `ILicenseFileAppService` 签发 JWT
-4. 响应 **`jwtToken`**（Urban 透传；客户端写 `LatestJwtToken`）
+```mermaid
+sequenceDiagram
+    participant Ops as 运营（Web）
+    participant Web as AuthController
+    participant Redis as Redis
+    participant Client as MaterialClient.Urban
+    participant Urban as UrbanManagement
+    participant Api as PublicApi activate-urban
+    participant Svc as ILicenseFileAppService
 
-**门禁**：`productCode != 5001` → 走现网 `GetAuthClientLicense`，**不**返回 `jwtToken`。
-
-```json
-// POST /api/auth/activate-urban
-{ "productCode": "5001", "code": "1234", "machineCode": "..." }
-
-// 200
-{ "success": true, "data": { "jwtToken": "<JWT>", "proId": "...", "accessCode": "...", "authEndDate": "..." } }
+    Ops->>Web: 列表「生成授权码」SendAuthLicense（5001）
+    Web->>Redis: SET AuthClientLicense:5001:{code}（载荷含 ProId 等）
+    Web-->>Ops: 4 位授权码
+    Ops->>Client: 口头/工单提供授权码
+    Client->>Urban: POST /api/urban/auth/activate {code, machineCode}
+    Urban->>Api: POST activate-urban（productCode=5001）
+    Api->>Redis: GET + DEL 一次性码
+    Api->>Api: 回写 MachineCode
+    Api->>Svc: BuildLicenseFileAsync
+    Svc-->>Api: jwtToken
+    Api-->>Urban: jwtToken + 元数据
+    Urban-->>Client: jwtToken
+    Client->>Client: LatestJwtToken + 本地验签
 ```
 
-**与离线共用**：同一 Generator、同一 Claims；SignalR 推送 JWT 为**可选续期**，非首次激活前置。
+| 链路 | 机器码来源 | 是否必须先有库表 MachineCode |
+|------|------------|------------------------------|
+| **离线** `.urban` | 现场脚本 → 运营 **先录入** 再下载 | **是** |
+| **在线** 授权码 | 客户端激活时 **上报**，`activate-urban` 回写库表 | **否**（可与离线并存） |
+
+详规见 §5.11–§5.13；Urban 代理见 [04](./04-UrbanManagement迁移拟稿提案.md)。
+
+### 5.11 `SendAuthLicense`（管理后台 · 生成在线授权码）
+
+**文件**：`FdSoft.BasePlatform/Controllers/AuthController.cs`  
+**入口**：授权列表 `projectauthmanage.js` → `lay-event="sendAuthCode"` → `POST .../SendAuthLicense`
+
+**现网行为（保持不变的部分）**：
+
+- 校验 `authId` 对应授权存在且未过期
+- 生成 4 位随机码，写入 Redis key：`AuthClientLicense:{productCode}:{code}`，TTL **48h**
+- 返回 `data = 授权码` 供运营告知现场
+
+**现网 Redis 载荷（所有产品）**：
+
+```json
+{
+  "ProId": "...",
+  "AuthEndTime": "yyyy-MM-dd HH:mm:ss",
+  "AuthToken": "...",
+  "MachineCode": "...",
+  "ProName": "..."
+}
+```
+
+**本提案改造（仅 `productCode == 5001`）**：
+
+```json
+{
+  "ProId": "...",
+  "AuthEndTime": "yyyy-MM-dd HH:mm:ss",
+  "AuthToken": "...",
+  "MachineCode": "...",
+  "ProName": "...",
+  "AccessCode": "..."
+}
+```
+
+| 产品 | Redis 载荷 | 消费端 |
+|------|------------|--------|
+| **5001** | 上表 **增加** `AccessCode`（来自 `JC_ProductAuthority.AccessCode`） | Urban → **`activate-urban`** → `jwtToken` |
+| **5000 / 5010 / 其它** | **与发版前 JSON 字段完全一致**（不增加 `AccessCode`） | 现网 `GetAuthClientLicense` |
+
+**拟稿代码（5001 分支）**：
+
+```csharp
+public IActionResult SendAuthLicense(string productCode, string? authId)
+{
+    // ... 现有校验（authId、过期）...
+    var payload = new Dictionary<string, object?>
+    {
+        ["ProId"] = (dbProductAuth.ProId ?? "").ToUpper(),
+        ["AuthEndTime"] = (dbProductAuth.AuthEndTime ?? DateTime.Now).ToString("yyyy-MM-dd HH:mm:ss"),
+        ["AuthToken"] = dbProductAuth.AuthToken ?? "",
+        ["MachineCode"] = dbProductAuth.MachineCode ?? "",
+        ["ProName"] = projectService.GetId(dbProductAuth.ProId)?.ProName
+    };
+    if (dbProductAuth.ProductCode == 5001)
+        payload["AccessCode"] = dbProductAuth.AccessCode ?? "";
+
+    string lic = JsonConvert.SerializeObject(payload);
+    // ... randomAuthCode + Redis SET（与现网相同 key 模式）...
+}
+```
+
+**运营前置（建议，非硬性阻断发码）**：
+
+| 条件 | 说明 |
+|------|------|
+| `AccessCode` 已维护 | 否则 `activate-urban` 签发 JWT 时 `accessCode` claim 为空 → 4xx |
+| 授权已审核通过 | 与离线下载一致 |
+
+**UI**：`sendAuthCode` 逻辑 **无需**按产品分叉；5001 与 5000 共用「生成授权码」按钮。可在 5001 列表增加 tooltip：「请确保已填写接入码；客户端激活后将获得 JWT」。
+
+### 5.12 `activate-urban` 实现要点（PublicApi）
+
+**文件**：`FdSoft.BasePlatform.PublicApi/Controllers/AuthController.cs`（或 `UrbanAuthController`，与 `license-file` 同模块）
+
+**依赖**：`ILicenseFileAppService`、`IJCProductAuthorityService`（或等价仓储）
+
+```csharp
+[HttpPost("activate-urban")]
+public async Task<IActionResult> ActivateUrban(
+    [FromBody] ActivateUrbanRequest request, CancellationToken ct)
+{
+    if (request.ProductCode != 5001)
+        return BadRequest("该产品请使用 GetAuthClientLicense");
+
+    var redisKey = $"{RedisConst.AuthClientLicense}:5001:{request.Code}";
+    var licenseJson = RedisHelper.Get(redisKey);
+    if (string.IsNullOrEmpty(licenseJson))
+        return NotFound(/* 授权码无效或已使用 */);
+
+    RedisHelper.Del(redisKey);
+
+    // 反序列化 Redis 载荷 → 定位 JC_ProductAuthority
+    // 校验 AuthStatus / CheckStatus / AuthEndTime / AccessCode
+    // authority.MachineCode = request.MachineCode; Update(...)
+
+    var build = await _licenseFileAppService.BuildLicenseFileAsync(
+        new LicenseFileBuildRequest(5001, proId, request.MachineCode, authEndDate), ct);
+
+    return JsonDate(new {
+        success = true,
+        data = new {
+            jwtToken = build.JwtToken,
+            proId = build.ProId,
+            proName = build.ProName,
+            accessCode = authority.AccessCode,
+            authEndDate = build.AuthEndDate
+        }
+    });
+}
+```
+
+**与 §4.4 关系**：§4.4 为对外契约；本节为实现落点。JWT Claims **必须**与 `DownloadUrbanLicense` / `license-file` 一致（同一 `BuildLicenseFileAsync`）。
+
+**SignalR**：Hub 推送 JWT 仅作**可选续期**；**不**替代本接口的首次 `jwtToken` 下发。
+
+### 5.13 与现网 `GetAuthClientLicense` 分界
+
+**现网**：`POST /api/AuthClientLicense/GetAuthClientLicense`
+
+- 读 Redis `AuthClientLicense:{productCode}:{code}` → **删除 key** → `result.data = license`（**原始 JSON 字符串**）
+- **不**回写 `MachineCode`、**不**签发 JWT
+- 用于 **5000** 物料客户端等现网在线激活
+
+**本提案分界**：
+
+| 产品 | 运营发码 | 客户端消费 API | 响应 |
+|------|----------|----------------|------|
+| **5001** | `SendAuthLicense`（载荷 +`AccessCode`） | Urban → **`activate-urban`** | **`jwtToken`** + 元数据 |
+| **5000 / 5010 / 其它** | `SendAuthLicense`（载荷不变） | **`GetAuthClientLicense`** | Redis JSON 字符串（现网） |
+
+**实现约束**：
+
+1. **不修改** `GetAuthClientLicense` 方法体（5000 回归）
+2. Urban 对 **5001** **必须**调 `activate-urban`，**禁止**对 5001 仍走 `GetAuthClientLicense` 后本地拼 JWT
+3. `activate-urban` 与 `GetAuthClientLicense` **共用同一 Redis key 前缀**；5001 授权码只能被消费一次（两接口择一，由 Urban 路由决定）
+
+**Urban 路由（04 对齐）**：
+
+```
+if (productCode == 5001)
+    → POST /api/auth/activate-urban
+else
+    → POST /api/AuthClientLicense/GetAuthClientLicense
+```
 
 ---
 
@@ -426,7 +654,7 @@ public sealed class BasePlatformJwtTokenGenerator
 | 2 | `ILicenseFileAppService`（授权查询 + 签发） | 0.5d |
 | 3 | PublicApi `GET /api/auth/license-file` + 鉴权 | 0.5d |
 | 4 | Web `DownloadUrbanLicense`（**仅 5001**）+ JS 分支 | 0.5d |
-| 5 | **5001** 在线 `activate-urban` + `jwtToken` | 0.5d |
+| 5 | **5001** `SendAuthLicense` 载荷 + `activate-urban`（§5.11–5.12） | 0.5d |
 | 6 | 与 02 联调；5000/5010 回归 | 0.5d |
 | 7 | 预发对比 Urban 旧签发 JWT 结构 | 0.5d |
 | **合计** | | **~4d** |
@@ -450,9 +678,14 @@ public sealed class BasePlatformJwtTokenGenerator
 | 9 | Web：5001 已授权且 AccessCode + MachineCode 齐全 | 下载 `license.urban`，内容与 PublicApi 同 auth 一致 |
 | 10 | Web：未录入 MachineCode | 列表无下载按钮；直链 `DownloadUrbanLicense` → 4xx |
 | 11 | Web：录入脚本机器码并保存后下载 | JWT `machineCode` claim == 库表 == 脚本输出 |
-| 12 | **5000** `SendAuthLicense` / `DownloadAuth` | 与发版前一致 |
+| 12 | **5000** `SendAuthLicense` / `DownloadAuth` / `GetAuthClientLicense` | 与发版前一致 |
 | 13 | **5010** 下载 | 仍 `DownloadAuth`，**无** JWT |
-| 14 | **5001** 在线激活 | 响应含 `jwtToken`，Claims 与离线下载一致 |
+| 14 | **5001** `SendAuthLicense` Redis 载荷 | 含 `AccessCode`；5000 载荷字段不变 |
+| 15 | **5001** 在线 `activate-urban` | 200 + `jwtToken`；Claims 与离线下载一致 |
+| 16 | **5001** 授权码重复使用 | 第二次 `activate-urban` → 404 |
+| 17 | **5001** `activate-urban` 回写机器码 | DB `MachineCode` == 请求 `machineCode`；`AccessCode` 不变 |
+| 18 | **5001** 无 `AccessCode` 时激活 | 4xx |
+| 19 | **5000** 误调 `activate-urban` | 400，提示走 `GetAuthClientLicense` |
 
 ---
 
@@ -486,7 +719,9 @@ public sealed class BasePlatformJwtTokenGenerator
 - [ ] 安全：私钥存储方式与轮换预案
 - [ ] 与 Urban 现网 JWT 对比时，明确 **不**恢复 `fdBuildLicenseNo` claim
 - [ ] `productCode` 枚举（5001 / UrbanManagement 字符串）与调用方一致
-- [ ] 响应格式（stream vs JSON）与 04 代理实现对齐
+- [ ] `activate-urban` 请求/响应与 [04](./04-UrbanManagement迁移拟稿提案.md) 代理字段对齐
+- [ ] **5001** Urban 路由：`activate-urban` vs `GetAuthClientLicense` 无歧义
+- [ ] `SendAuthLicense` 仅 5001 增加 `AccessCode`；5000 JSON 回归快照对比
 - [ ] P2 可与 P1 同发版还是必须晚于 P0
 - [ ] 5001 离线下载与旧 `RSA.xml` / `DownloadAuth` 切换策略（是否保留旧按钮入口）
 - [ ] Web 下载审计日志是否纳入 P2
@@ -506,5 +741,5 @@ public sealed class BasePlatformJwtTokenGenerator
 
 ---
 
-**文档版本**：0.5（拟稿）  
-**最后更新**：2026-05-29（仅 5001 JWT、在线 jwtToken、废弃 verify、产品隔离）
+**文档版本**：0.6（拟稿）  
+**最后更新**：2026-05-29（§4.4 / §5.11–5.13 在线流程详规）
