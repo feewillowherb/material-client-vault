@@ -71,7 +71,7 @@ public class GovProject : Entity<Guid>
 - `AuthEndTime` - 现有字段，表示授权结束时间
 
 **不需要的字段**：
-- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 JCProductAuthority 表管理
 - ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
 - ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理
 
@@ -212,7 +212,7 @@ public class LicenseInfo : Entity<Guid>
       │                    ▼                      ▼
       │              4. 验证授权码             
       │              并持久化到               
-  7. 返回授权    ───> Material_MachineCode <─── 5. 写入 GovProject
+  7. 返回授权    ───> JC_ProductAuthority <─── 5. 写入 GovProject
     信息给管理             │                    (MachineCode, AuthToken)
       员                   ▼
                       6. 更新 GovProject
@@ -234,7 +234,7 @@ public class LicenseInfo : Entity<Guid>
 | 2 | MaterialClient.Urban 用户 | 输入授权码 | - |
 | 3 | MaterialClient.Urban | 获取本地机器码，发送请求到 UrbanManagement | → UrbanManagement |
 | 4 | UrbanManagement | 转发到 BasePlatform 验证 | → BasePlatform |
-| 5 | BasePlatform | 验证授权码，持久化机器码 | 写入 Material_MachineCode |
+| 5 | BasePlatform | 验证授权码，持久化机器码 | 写入 JC_ProductAuthority |
 | 6 | UrbanManagement | 更新 GovProject | 写入 MachineCode, AuthToken |
 | 7 | BasePlatform | 返回授权信息给管理员（确认） | - |
 | 8 | UrbanManagement | 返回激活结果给客户端 | → MaterialClient.Urban |
@@ -261,7 +261,7 @@ T3: UrbanManagement 收到请求，转发到 BasePlatform
 
 T4: BasePlatform 验证授权码
     → 从 Redis 读取并删除授权码
-    → 写入 Material_MachineCode: { MachineCode: "MACHINE-ABC-123", AuthToken: "TOKEN-XYZ", ... }
+    → 写入 JC_ProductAuthority: { MachineCode: "MACHINE-ABC-123", AuthToken: "TOKEN-XYZ", ... }
     → 返回: { success: true, data: { authToken: "TOKEN-XYZ", authEndDate: "2026-12-31", ... } }
 
 T5: UrbanManagement 收到响应，更新 GovProject

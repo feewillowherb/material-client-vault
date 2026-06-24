@@ -53,7 +53,7 @@ public class GovProject : Entity<Guid>
 | LastMachineCodeUpdate | **新增** | 机器码更新时间 |
 
 **不需要的字段**：
-- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 JCProductAuthority 表管理
 - ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
 - ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理
 
@@ -141,7 +141,7 @@ UrbanManagement 通过 BasePlatform.PublicApi 调用以下接口。
 
 1. 验证 Redis 中的授权码
 2. 删除授权码（一次性使用）
-3. 插入/更新 `Material_MachineCode` 表
+3. 插入/更新 `JCProductAuthority` 表（包含 MachineCode 字段）
 4. 返回授权信息给 UrbanManagement
 5. UrbanManagement 更新本地 GovProject
 
@@ -183,36 +183,61 @@ UrbanManagement 通过 BasePlatform.PublicApi 调用以下接口。
 
 **响应**：返回对应平台的脚本文件
 
-## 4. BasePlatform.Material_MachineCode 表设计
+## 4. BasePlatform.JCProductAuthority 表设计
 
 ### 4.1 表结构
 
 ```sql
--- BasePlatform.Material_MachineCode 表（现有）
-CREATE TABLE Material_MachineCode (
-    MachineId INT PRIMARY KEY IDENTITY,
-    ProId NVARCHAR(50),
-    AuthStatus INT,                    -- 0=失效, 1=正常
-    MachineCode NVARCHAR(100),
-    Remark NVARCHAR(500),
-    AddDate DATETIME,
-    AuthEndDate DATETIME,
-    AuthToken NVARCHAR(50),
-    AuthType INT                        -- 0=离线, 1=在线
+-- BasePlatform.JC_ProductAuthority 表（实际使用）
+CREATE TABLE JC_ProductAuthority (
+    AuthId BIGINT PRIMARY KEY IDENTITY,
+    ProductCode INT NOT NULL,              -- 产品标识（Urban=5001）
+    CoId INT NOT NULL,                     -- 项目企业主键
+    ProId NVARCHAR(50) NOT NULL,           -- 项目主键
+    AuthStatus TINYINT NOT NULL,           -- 授权状态（0=未授权，1=已授权）
+    AuthBeginTime DATETIME,                 -- 授权开始时间
+    AuthEndTime DATETIME,                  -- 授权到期时间
+    MachineCode NVARCHAR(100),              -- 机器码
+    AuthToken NVARCHAR(100),                -- 授权码
+    AuthTime DATETIME,                      -- 授权时间
+    AuthUserId INT NOT NULL,                -- 授权人主键
+    AuthUser NVARCHAR(50),                 -- 授权人
+    CheckStatus TINYINT NOT NULL,           -- 审核状态（1=待审核，2=审核通过，3=审核不通过）
+    CheckRemark NVARCHAR(500),              -- 审核备注
+    CheckTime DATETIME,                     -- 审核时间
+    CheckUserId INT NOT NULL,               -- 审核人主键
+    CheckUser NVARCHAR(50),                 -- 审核人
+    Remark NVARCHAR(500),                   -- 备注
+    CreateTime DATETIME NOT NULL,           -- 创建时间
+    CreateUserId INT NOT NULL,              -- 创建人主键
+    CreateUser NVARCHAR(50),               -- 创建人
+    UpdateTime DATETIME,                    -- 修改时间
+    UpdateUserId INT NOT NULL,              -- 修改人主键
+    UpdateUser NVARCHAR(50),               -- 修改人
+    DeleteStatus TINYINT NOT NULL            -- 是否删除
 );
 ```
 
 ### 4.2 使用约定
 
 ```sql
--- AuthType 字段约定
--- 0 = 离线授权（文件导入）
--- 1 = 在线授权（授权码激活）
+-- AuthStatus 字段约定
+-- 0 = 未授权
+-- 1 = 已授权
+
+-- CheckStatus 字段约定
+-- 1 = 待审核
+-- 2 = 审核通过
+-- 3 = 审核不通过
+
+-- ProductCode 字段约定
+-- 5001 = UrbanManagement 产品
 
 -- 新增索引优化
-CREATE INDEX IDX_MachineCode_ProId ON Material_MachineCode(ProId);
-CREATE INDEX IDX_MachineCode_Code ON Material_MachineCode(MachineCode);
-CREATE INDEX IDX_MachineCode_Token ON Material_MachineCode(AuthToken);
+CREATE INDEX IDX_JCProductAuthority_ProId ON JC_ProductAuthority(ProId);
+CREATE INDEX IDX_JCProductAuthority_MachineCode ON JC_ProductAuthority(MachineCode);
+CREATE INDEX IDX_JCProductAuthority_AuthToken ON JC_ProductAuthority(AuthToken);
+CREATE INDEX IDX_JCProductAuthority_ProductCode ON JC_ProductAuthority(ProductCode);
 ```
 
 ## 5. Redis 授权码存储约定

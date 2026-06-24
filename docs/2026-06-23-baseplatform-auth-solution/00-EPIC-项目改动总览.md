@@ -216,7 +216,7 @@ public class GovProject : Entity<Guid>
 - `AuthEndTime` - 现有字段，表示授权结束时间，由 BasePlatform 返回
 
 **不需要的字段**：
-- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 Material_MachineCode 表管理，GovProject 不需要
+- ~~`AuthStatus`~~ - 授权状态应由 BasePlatform 的 JCProductAuthority 表管理，GovProject 不需要
 - ~~`AuthBeginDate`~~ - 授权开始时间在 UrbanManagement 业务场景中不需要
 - ~~`AuthType`~~ - 授权类型（离线/在线）应由 BasePlatform 管理，UrbanManagement 作为代理层不需要区分
 
@@ -438,7 +438,7 @@ public class UrbanAuthService
 #### 1.1 决策背景
 
 **技术约束**：
-- BasePlatform 现有的 Material_MachineCode 表设计为授权中心的全局视图
+- BasePlatform 现有的 JC_ProductAuthority 表设计为授权中心的全局视图
 - 该表由 BasePlatform.WebApi 通过管理界面操作，不暴露给外部 API 写入
 - 若开放写权限，需重新设计 BasePlatform 的安全模型和 API 权限体系
 
@@ -456,7 +456,7 @@ public class UrbanAuthService
 ┌─────────────────────────────────────────────────────────────────┐
 │                      BasePlatform 平台                            │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  Material_MachineCode（授权中心全局视图）                    │ │
+│  │  JC_ProductAuthority（授权中心全局视图）                    │ │
 │  │  - 授权状态全局汇总                                         │ │
 │  │  - AuthToken 管理                                          │ │
 │  │  - 授权过期时间管理                                         │ │
@@ -501,7 +501,7 @@ public class UrbanAuthService
 | 缺点 | 缓解措施 |
 |-----|---------|
 | **BasePlatform 无全局 MachineCode 视图** | UrbanManagement 可定期通过管理界面同步数据到 BasePlatform |
-| **数据一致性风险** | GovProject 是权威来源，BasePlatform.Material_MachineCode 作为副本即可 |
+| **数据一致性风险** | GovProject 是权威来源，BasePlatform.JC_ProductAuthority 作为副本即可 |
 | **运维复杂度增加** | 需明确 GovProject 为主要数据源，建立运维规范 |
 
 ---
@@ -537,7 +537,7 @@ public class UrbanAuthService
 
 **未来扩展路径**：
 - 如需 BasePlatform 拥有全局 MachineCode 视图，可通过 UrbanManagement 提供的查询接口定期同步
-- 或由 UrbanManagement 定期通过管理界面更新 BasePlatform.Material_MachineCode 表
+- 或由 UrbanManagement 定期通过管理界面更新 BasePlatform.JC_ProductAuthority 表
 
 ### 2. 客户端激活时不提供 ProId
 
@@ -635,7 +635,7 @@ public class UrbanAuthService
 | AuthEndTime | `DATETIME2` | 授权结束时间（已有，保留） |
 
 **说明**：
-- 授权状态、授权类型等管理字段由 BasePlatform 的 Material_MachineCode 表负责
+- 授权状态、授权类型等管理字段由 BasePlatform 的 JC_ProductAuthority 表负责
 - UrbanManagement.GovProject 仅需存储机器码绑定信息和授权令牌
 - 授权验证逻辑由 BasePlatform.PublicApi 处理，UrbanManagement 作为代理层转发
 

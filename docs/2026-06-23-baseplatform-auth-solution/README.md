@@ -79,9 +79,9 @@ public class GovProject : Entity<Guid>
 - `LastMachineCodeUpdate` - 机器码最后更新时间，用于追踪变更
 - `AuthEndTime` - 现有字段，表示授权结束时间
 
-**不需要的字段**（由 BasePlatform 的 Material_MachineCode 表管理）：
+**不需要的字段**（由 BasePlatform 的 JCProductAuthority 表管理）：
 - ~~`AuthStatus`~~ - 授权状态
-- ~~`AuthBeginDate`~~ - 授权开始时间
+- ~~`AuthBeginDate`~~ - 授权开始时间  
 - ~~`AuthType`~~ - 授权类型（离线/在线）
 
 **客户端 LicenseInfo 结构**（保持不变）：
