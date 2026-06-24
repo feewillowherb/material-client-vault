@@ -1,5 +1,7 @@
 # UrbanManagement 代理验证方案讨论
 
+> **字段语义**：`AccessCode` = 城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）。见 [分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。
+
 ## 方案概述
 
 ### 核心思想
@@ -53,8 +55,8 @@ public class GovProject : Entity<Guid>
 {
     // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号
-    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo）
+    public string? FdBuildLicenseNo { get; set; }      // 凡东 MD5 对接码
     public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
 
     // ===== 新增：机器码授权字段 =====
@@ -108,9 +110,9 @@ public class LicenseInfo : Entity<Guid>
     public string? ProName { get; set; }
 
     /// <summary>
-    /// 施工许可证号（接入码）
+    /// 城管接入码（原 BuildLicenseNo）
     /// </summary>
-    public string? BuildLicenseNo { get; set; }
+    public string? AccessCode { get; set; }
 
     /// <summary>
     /// 对接码
@@ -148,14 +150,14 @@ public class LicenseInfo : Entity<Guid>
     /// 更新授权信息
     /// </summary>
     public void Update(Guid? authToken, DateTime authEndTime, string machineCode,
-        string? proName = null, string? buildLicenseNo = null, string? fdBuildLicenseNo = null);
+        string? proName = null, string? accessCode = null, string? fdBuildLicenseNo = null);
 }
 ```
 
 **授权验证机制**：
 1. **JWT 验证**：使用 RSA 公钥验证 RS256 签名
 2. **验证优先级**：LatestJwtToken → .urban 文件
-3. **Claims 提取**：proId, proName, buildLicenseNo, fdBuildLicenseNo, exp
+3. **Claims 提取**：proId, proName, accessCode, fdBuildLicenseNo, exp
 4. **过期检查**：AuthEndTime（从 JWT exp claim 获取）
 5. **机器码验证**：当前机器码 == LicenseInfo.MachineCode
 
@@ -367,7 +369,7 @@ public class UrbanAuthProxyController : AbpController
 }
 ```
 
-### 2. 本地验证接口（基于 LicenseKey）
+### 2. 本地验证接口（基于 AccessCode）
 
 ```csharp
 /// <summary>
@@ -377,13 +379,13 @@ public class UrbanAuthProxyController : AbpController
 public async Task<ApiResultDto<VerifyResultDto>> VerifyLocal(
     [FromBody] VerifyLocalRequest request)
 {
-    // 1. 根据 LicenseKey（BuildLicenseNo）查找 GovProject
+    // 1. 根据 AccessCode 查找 GovProject
     var project = await _projectRepository.FirstOrDefaultAsync(
-        p => p.BuildLicenseNo == request.LicenseKey);
+        p => p.AccessCode == request.AccessCode);
 
     if (project == null)
     {
-        return ApiResultDto<VerifyResultDto>.Fail("许可证不存在");
+        return ApiResultDto<VerifyResultDto>.Fail("接入码不存在");
     }
 
     // 2. 检查授权是否过期
@@ -445,34 +447,31 @@ public async Task<IActionResult> GetLicenseFileProxy([FromQuery] string machineC
 
 ## MaterialClient.Urban 验证实现（兼容现有 LicenseInfo）
 
-### 1. 验证服务（基于 LicenseKey）
+### 1. 验证服务（基于 AccessCode）
 
 ```csharp
 public class UrbanAuthService
 {
     private readonly IUrbanManagementApi _urbanApi;
-    private readonly LicenseInfo _licenseInfo;  // 当前 LicenseInfo 结构
+    private readonly LicenseInfo _licenseInfo;
 
     /// <summary>
-    /// 启动时验证（保持现有接口）
+    /// 启动时验证
     /// </summary>
     public async Task<bool> VerifyOnStartup()
     {
-        // 1. 使用当前 LicenseInfo 中的 LicenseKey（BuildLicenseNo）
-        if (string.IsNullOrEmpty(_licenseInfo.LicenseKey))
+        if (string.IsNullOrEmpty(_licenseInfo.AccessCode))
         {
-            MessageBox.Show("未配置许可证，请联系管理员", "授权验证",
+            MessageBox.Show("未配置接入码，请联系管理员", "授权验证",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
 
-        // 2. 获取当前机器码
         var machineCode = MachineCodeProvider.GetMachineCode();
 
-        // 3. 调用 UrbanManagement 验证（LicenseKey + MachineCode）
         var response = await _urbanApi.VerifyLocal(new VerifyLocalRequest
         {
-            LicenseKey = _licenseInfo.LicenseKey,  // BuildLicenseNo
+            AccessCode = _licenseInfo.AccessCode,
             MachineCode = machineCode
         });
 

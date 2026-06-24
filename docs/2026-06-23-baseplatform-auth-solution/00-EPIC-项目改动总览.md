@@ -1,5 +1,11 @@
 # UrbanManagement 代理授权方案 - 项目改动 EPIC
 
+> **字段语义（已定）**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。  
+> - **`AccessCode`**：城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）  
+> - **`MachineCode`**：设备机器码  
+> - **`FdBuildLicenseNo`**：凡东 MD5  
+> - 政府 HTTP 出站 `buildLicenseNo` 协议名可保留，**值 = AccessCode**
+
 ## 概述
 
 本文档作为 UrbanManagement 代理授权方案的总体 EPIC，描述所有涉及项目的改动内容。每个项目可基于此文档创建详细的 Proposal 和实施计划。
@@ -9,7 +15,7 @@
 **核心目标**：
 - 在 GovProject 中扩展机器码授权字段
 - UrbanManagement 作为代理层处理授权验证
-- MaterialClient.Urban 保持现有 LicenseInfo 结构和 JWT 验证机制
+- MaterialClient.Urban 更新 LicenseInfo（`BuildLicenseNo` → `AccessCode`）与 JWT 验证机制
 - BasePlatform.PublicApi 提供授权验证能力
 - **将 UrbanManagement 中的 JWT 授权文件签发流程移植到 BasePlatform**
 - **在 BasePlatform 中提供授权文件下载功能**
@@ -88,7 +94,7 @@ Content-Disposition: attachment; filename="license.urban"
 
 **实现要点**：
 - 使用 RS256 算法签名 JWT（与 UrbanManagement 保持一致）
-- JWT Claims 包含：`proId`, `proName`, `buildLicenseNo`, `fdBuildLicenseNo`, `exp`
+- JWT Claims 包含：`proId`, `proName`, `accessCode`, `fdBuildLicenseNo`, `exp`, `machineCode`
 - 私钥配置：`Jwt:PrivateKey`（从 UrbanManagement 移植）
 - 公钥分发给 MaterialClient.Urban 客户端（用于验证）
 - 返回的 JWT 文件可直接用作 .urban 文件
@@ -139,7 +145,7 @@ public class BasePlatformJwtTokenGenerator
             Subject = new ClaimsIdentity([
                 new Claim("proId", request.ProId.ToString()),
                 new Claim("proName", ""),
-                new Claim("buildLicenseNo", ""),
+                new Claim("accessCode", ""),
                 new Claim("fdBuildLicenseNo", ""),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             ])
@@ -197,8 +203,8 @@ public class GovProject : Entity<Guid>
 {
     // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号
-    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo，列重命名）
+    public string? FdBuildLicenseNo { get; set; }      // 凡东 MD5 对接码
     public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
     public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
@@ -223,6 +229,9 @@ public class GovProject : Entity<Guid>
 **数据库迁移**：
 ```sql
 -- 添加新字段到 GovProject 表
+-- GovProject：BuildLicenseNo 列重命名为 AccessCode（SQLite/SQL Server 语法按环境调整）
+-- ALTER TABLE GovProject RENAME COLUMN BuildLicenseNo TO AccessCode;
+
 ALTER TABLE GovProject ADD COLUMN MachineCode NVARCHAR(128) NULL;
 ALTER TABLE GovProject ADD COLUMN AuthToken UNIQUEIDENTIFIER NULL;
 ALTER TABLE GovProject ADD COLUMN LastMachineCodeUpdate DATETIME2 NULL;
@@ -277,7 +286,7 @@ CREATE INDEX IDX_GovProject_AuthToken ON GovProject(AuthToken);
 **请求参数**：
 ```json
 {
-  "buildLicenseNo": "BUILD-LICENSE-NO",
+  "accessCode": "ACCESS-CODE-VALUE",
   "machineCode": "MACHINE-CODE-12345"
 }
 ```
@@ -296,7 +305,7 @@ CREATE INDEX IDX_GovProject_AuthToken ON GovProject(AuthToken);
 ```
 
 **实现逻辑**：
-1. 根据 BuildLicenseNo 查找 GovProject
+1. 根据 **AccessCode** 查找 GovProject
 2. 检查授权状态和过期时间
 3. 验证机器码是否匹配
 4. 返回验证结果
@@ -313,7 +322,7 @@ public class ClientLicenseUpdateDto
 {
     public string ProId { get; set; }
     public string? ProName { get; set; }
-    public string? BuildLicenseNo { get; set; }
+    public string? AccessCode { get; set; }
     public string? FdBuildLicenseNo { get; set; }
     public DateTime AuthEndTime { get; set; }
     public string JwtToken { get; set; }
@@ -328,9 +337,9 @@ public class ClientLicenseUpdateDto
 
 **改动内容**：
 
-#### 3.1 保持现有 LicenseInfo 结构（无改动）
+#### 3.1 LicenseInfo 结构（AccessCode 重命名）
 
-**现有结构**（保持不变）：
+**变更**：`BuildLicenseNo` 属性重命名为 **`AccessCode`**；其余字段不变。
 ```csharp
 [Table("LicenseInfo")]
 public class LicenseInfo : Entity<Guid>
@@ -339,7 +348,7 @@ public class LicenseInfo : Entity<Guid>
     public Guid? AuthToken { get; set; }
     public DateTime AuthEndTime { get; set; }
     public string? ProName { get; set; }
-    public string? BuildLicenseNo { get; set; }
+    public string? AccessCode { get; set; }
     public string? FdBuildLicenseNo { get; set; }
     public string? LatestJwtToken { get; set; }  // 服务器推送的最新 JWT
     public string MachineCode { get; set; }
@@ -383,7 +392,7 @@ public class UrbanAuthService
         // 从响应中获取 ProId 并更新本地 LicenseInfo
         await _licenseService.SyncProjectFieldsFromServerAsync(
             response.Data.ProName,
-            response.Data.BuildLicenseNo ?? "",
+            response.Data.AccessCode ?? "",
             response.Data.FdBuildLicenseNo ?? "",
             response.Data.AuthEndDate
         );
@@ -548,15 +557,15 @@ public class UrbanAuthService
 - ProId 由服务器端根据授权码匹配后返回
 - UrbanManagement 根据 BasePlatform 返回的 ProId 更新 GovProject
 
-### 3. 授权验证使用 BuildLicenseNo 而非 ProId
+### 3. 授权验证使用 AccessCode 而非 ProId
 
 **原因**：
-- MaterialClient.Urban 当前使用 BuildLicenseNo 作为许可证密钥
-- 需要保持向后兼容
+- MaterialClient.Urban 以 **AccessCode**（原误称 BuildLicenseNo）作为项目接入标识
+- 需要保持向后兼容（迁移期 JWT 可同时携带 `accessCode` 与废弃 claim）
 
 **解决方案**：
-- UrbanManagement 验证接口使用 `buildLicenseNo` 查找 GovProject
-- 客户端调用时传递 `BuildLicenseNo` 而非 `ProId`
+- UrbanManagement 验证接口使用 **`accessCode`** 查找 GovProject
+- 客户端调用时传递 **AccessCode** 而非 `ProId`
 
 ### 4. JWT 推送机制
 
@@ -629,6 +638,7 @@ public class UrbanAuthService
 
 | 字段名 | 类型 | 说明 |
 |-------|------|------|
+| AccessCode | `NVARCHAR(200)` | 城管接入码（**原 BuildLicenseNo 列重命名**） |
 | MachineCode | `NVARCHAR(128)` | 绑定的机器码（新增） |
 | AuthToken | `UNIQUEIDENTIFIER` | 授权令牌（新增） |
 | LastMachineCodeUpdate | `DATETIME2` | 机器码更新时间（新增） |
@@ -641,7 +651,7 @@ public class UrbanAuthService
 
 ### MaterialClient.LicenseInfo
 
-**无结构变更**，现有字段已满足需求。新增 LatestJwtToken 字段用于接收服务器推送。
+**变更**：属性 **`BuildLicenseNo` 重命名为 `AccessCode`**；`LatestJwtToken` 等其余字段不变。
 
 ---
 
@@ -651,7 +661,7 @@ public class UrbanAuthService
 |-----|------|---------|
 | BasePlatform 不回写 MachineCode | 无法在 BasePlatform 端统一管理机器码 | UrbanManagement 在 GovProject 中自行管理 |
 | 客户端不知道 ProId | 无法在激活时指定项目 | ProId 由服务器端根据授权码匹配后返回 |
-| BuildLicenseNo 唯一性 | 可能存在重复许可证号 | UrbanManagement 根据 BuildLicenseNo 唯一查找 GovProject |
+| AccessCode 唯一性 | 接入码应在 GovProject 内可唯一查找 | 为 AccessCode 建索引；Pull 同步与 BasePlatform 对齐 |
 | 机器码不稳定 | 硬件变更导致授权失效 | 提供机器码重新绑定流程 |
 
 ---
@@ -679,5 +689,5 @@ public class UrbanAuthService
 
 **文档版本**：1.0
 **创建日期**：2026-06-23
-**最后更新**：2026-06-23
+**最后更新**：2026-06-24（AccessCode 语义对齐）
 **状态**：待各项目创建详细 Proposal

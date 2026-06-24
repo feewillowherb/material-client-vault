@@ -1,5 +1,7 @@
 # UrbanManagement 授权方案设计
 
+> **字段语义**：见 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。`GovProject.BuildLicenseNo` 重命名为 **`AccessCode`**。
+
 ## 1. 概述
 
 本文档定义 UrbanManagement 基于当前授权机制的扩展方案，采用 UrbanManagement 代理架构：
@@ -16,8 +18,8 @@
 public class GovProject : Entity<Guid>
 {
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号（保留）
-    public string? FdBuildLicenseNo { get; set; }      // 对接码（删除）
+    public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo）
+    public string? FdBuildLicenseNo { get; set; }      // 凡东对接码（MD5）
 }
 ```
 
@@ -29,8 +31,8 @@ public class GovProject : Entity<Guid>
 {
     // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? BuildLicenseNo { get; set; }        // 建设许可证号
-    public string? FdBuildLicenseNo { get; set; }      // 对接码
+    public string? AccessCode { get; set; }            // 城管接入码
+    public string? FdBuildLicenseNo { get; set; }      // 凡东对接码
     public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
     public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
@@ -45,8 +47,8 @@ public class GovProject : Entity<Guid>
 
 | 字段 | 变更 | 说明 |
 |-----|------|------|
-| BuildLicenseNo | **保留** | 建设许可证号，业务标识 |
-| FdBuildLicenseNo | **保留** | 对接码（保持兼容） |
+| AccessCode | **重命名**（原 BuildLicenseNo） | 城管接入码，PublicApi / 验证主键 |
+| FdBuildLicenseNo | **保留** | 凡东 MD5 对接码 |
 | AuthEndTime | **保留** | 授权结束时间（已有字段） |
 | MachineCode | **新增** | 机器码绑定 |
 | AuthToken | **新增** | BasePlatform 授权令牌 |
@@ -197,7 +199,8 @@ CREATE TABLE JC_ProductAuthority (
     AuthStatus TINYINT NOT NULL,           -- 授权状态（0=未授权，1=已授权）
     AuthBeginTime DATETIME,                 -- 授权开始时间
     AuthEndTime DATETIME,                  -- 授权到期时间
-    MachineCode NVARCHAR(100),              -- 机器码
+    MachineCode NVARCHAR(100),              -- 机器码（仅设备）
+    AccessCode NVARCHAR(200),               -- 接入码（新增）
     AuthToken NVARCHAR(100),                -- 授权码
     AuthTime DATETIME,                      -- 授权时间
     AuthUserId INT NOT NULL,                -- 授权人主键
@@ -238,6 +241,7 @@ CREATE INDEX IDX_JCProductAuthority_ProId ON JC_ProductAuthority(ProId);
 CREATE INDEX IDX_JCProductAuthority_MachineCode ON JC_ProductAuthority(MachineCode);
 CREATE INDEX IDX_JCProductAuthority_AuthToken ON JC_ProductAuthority(AuthToken);
 CREATE INDEX IDX_JCProductAuthority_ProductCode ON JC_ProductAuthority(ProductCode);
+CREATE INDEX IDX_JCProductAuthority_AccessCode ON JC_ProductAuthority(AccessCode);
 ```
 
 ## 5. Redis 授权码存储约定
@@ -391,6 +395,6 @@ public class AuthTokenGenerator
 
 ---
 
-**文档版本**：2.0
-**最后更新**：2026-06-23
+**文档版本**：2.1  
+**最后更新**：2026-06-24（AccessCode 语义对齐）
 **变更说明**：采用 UrbanManagement 代理方案，简化 GovProject 字段变更

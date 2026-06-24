@@ -1,5 +1,7 @@
 # Urban BasePlatform 授权方案调研
 
+> **字段语义**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。域内使用 **`AccessCode`**（城管接入码），**非**施工许可证号；`FdBuildLicenseNo` 为凡东 MD5。
+
 ## 调研文档索引
 
 ### 00-调研总览.md
@@ -62,8 +64,8 @@
 public class GovProject : Entity<Guid>
 {
     // 现有字段...
-    public string? BuildLicenseNo { get; set; }       // 建设许可证号（保留，作为 LicenseKey）
-    public string? FdBuildLicenseNo { get; set; }     // 对接码（保留）
+    public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo，待重命名）
+    public string? FdBuildLicenseNo { get; set; }     // 凡东对接码（MD5）
     public DateTime? AuthEndTime { get; set; }        // 授权结束时间（已有）
 
     // 新增机器码授权字段
@@ -84,8 +86,8 @@ public class GovProject : Entity<Guid>
 - ~~`AuthBeginDate`~~ - 授权开始时间  
 - ~~`AuthType`~~ - 授权类型（离线/在线）
 
-**客户端 LicenseInfo 结构**（保持不变）：
-- 客户端使用 `LicenseKey`（对应 BuildLicenseNo）进行验证
+**客户端 LicenseInfo 结构**（`AccessCode` 替代原 `BuildLicenseNo` 属性名）：
+- 客户端使用 **`AccessCode`**（或过渡期 `LicenseKey`，值同为接入码）进行项目匹配验证
 - 新增字段为可选，确保向后兼容
 
 ### 原直连方案摘要
@@ -105,13 +107,13 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 
 ## 关键验证规则（UrbanManagement 代理模式）
 
-**启动时验证**：客户端使用 LicenseInfo.LicenseKey + 当前机器码调用 UrbanManagement API
-- UrbanManagement 根据 LicenseKey（BuildLicenseNo）查找 GovProject
+**启动时验证**：客户端使用 LicenseInfo.`AccessCode` + 当前机器码调用 UrbanManagement API
+- UrbanManagement 根据 **`AccessCode`** 查找 GovProject
 - UrbanManagement 验证：当前机器码 == GovProject.MachineCode
 
 **任一不匹配** → 授权失效 → 关闭程序
 
-> **说明**：客户端保持当前 LicenseInfo 结构不变，使用 LicenseKey（BuildLicenseNo）进行验证。UrbanManagement 负责授权验证和机器码管理。
+> **说明**：客户端 JWT / LicenseInfo 以 **`AccessCode`** 作为项目接入标识。UrbanManagement 负责授权验证和机器码管理。详见 [01-解决方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md)。
 
 ## 实施工期估算
 
@@ -122,9 +124,11 @@ BasePlatform 已具备基础授权能力，但需扩展以下功能以支持 Urb
 
 ## 相关调研
 
+- [AccessCode 与 MachineCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) - 字段语义与 UrbanManagement 对齐（**必读**）
 - [Urban PFX 授权方案](../2026-05-27-urban-management-pfx-auth-solution/) - 另一种授权方案（证书）
 
 ---
 
-**调研时间**：2026-06-23
+**调研时间**：2026-06-23  
+**语义对齐**：2026-06-24（AccessCode）  
 **调研状态**：方案设计完成，待实施
