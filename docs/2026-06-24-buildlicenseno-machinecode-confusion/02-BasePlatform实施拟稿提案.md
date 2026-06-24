@@ -35,13 +35,21 @@
 4. `FdSoft.BasePlatform.PublicApi`：`ProjectCatalogController.ListProjects` 输出 `AccessCode`、`MachineCode`；筛选改为 `AccessCode` 非空 + 已授权。
 5. 可选：DTO 保留 `[Obsolete] BuildLicenseNo` 别名，供尚未升级的下游只读兼容一个版本。
 
-### 2.2 非目标（其他仓库 / 后续提案）
+### 2.2 非目标（见分册拟稿）
 
-- UrbanManagement `GovProject` 列重命名、`GovProjectPullBackgroundWorker` 映射。
-- MaterialClient.Urban `LicenseInfo`、JWT Claims、`accessCode` 改造。
-- 政府 HTTP 出站 `buildLicenseNo` 字段映射（由 Urban 提案承接）。
+| 主题 | 文档 |
+|------|------|
+| JWT 签发迁入 BasePlatform | [03-BasePlatform-JWT签发迁移拟稿提案.md](./03-BasePlatform-JWT签发迁移拟稿提案.md) |
+| UrbanManagement（AccessCode + JWT 代理/下线） | [04-UrbanManagement迁移拟稿提案.md](./04-UrbanManagement迁移拟稿提案.md) |
+| 发版顺序与依赖 | [05-联合发版说明.md](./05-联合发版说明.md) |
+| MaterialClient.Urban 客户端改造 | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
 
----
+### 2.3 与 JWT 迁移的接口约定
+
+- 本提案落地后，`JC_ProductAuthority.AccessCode` 为 JWT Claims 中 `accessCode` 的数据源（见 03）。
+- 本提案 **不包含** `/api/auth/license-file` 实现。
+
+**联合发版**：[05-联合发版说明.md](./05-联合发版说明.md)
 
 ## 3. 涉及仓库与项目
 
@@ -286,7 +294,7 @@ flowchart LR
 | 迁移误清真 `MachineCode` | 先阶段 A 双写；阶段 B 单独评审 + 抽样 |
 | 运营习惯仍填旧 `MachineCode` 框 | 上线说明 + 短期 UI 提示文案 |
 
-**外部依赖**：UrbanManagement 消费方须在某版本改为读 `accessCode`（**本提案不包含其代码修改**）。
+**外部依赖**：Urban 侧见 [04-UrbanManagement迁移拟稿提案.md](./04-UrbanManagement迁移拟稿提案.md)；发版顺序见 [05](./05-联合发版说明.md)。
 
 ---
 
@@ -302,11 +310,14 @@ flowchart LR
 
 ## 13. 文档索引
 
-| 编号 | 文档 |
-|------|------|
-| 00 | [00-问题分析.md](./00-问题分析.md) |
-| 01 | [01-解决方案.md](./01-解决方案.md) |
-| 02 | [02-BasePlatform实施拟稿提案.md](./02-BasePlatform实施拟稿提案.md)（本文档） |
+| 编号 | 文档 | 说明 |
+|------|------|------|
+| 00 | [00-问题分析.md](./00-问题分析.md) | 问题发现 |
+| 01 | [01-解决方案.md](./01-解决方案.md) | 全链路总方案 |
+| 02 | [02-BasePlatform实施拟稿提案.md](./02-BasePlatform实施拟稿提案.md) | 本文档 |
+| 03 | [03-BasePlatform-JWT签发迁移拟稿提案.md](./03-BasePlatform-JWT签发迁移拟稿提案.md) | JWT 签发迁入 BasePlatform |
+| 04 | [04-UrbanManagement迁移拟稿提案.md](./04-UrbanManagement迁移拟稿提案.md) | Urban 配合迁移 |
+| 05 | [05-联合发版说明.md](./05-联合发版说明.md) | 发版顺序与依赖 |
 
 ---
 
