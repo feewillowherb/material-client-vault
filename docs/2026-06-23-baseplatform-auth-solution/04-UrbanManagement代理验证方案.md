@@ -56,7 +56,6 @@ public class GovProject : Entity<Guid>
     // 现有字段（保留）
     public string ProName { get; set; } = default!;
     public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo）
-    public string? FdBuildLicenseNo { get; set; }      // 凡东 MD5 对接码
     public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
 
     // ===== 新增：机器码授权字段 =====
@@ -115,11 +114,6 @@ public class LicenseInfo : Entity<Guid>
     public string? AccessCode { get; set; }
 
     /// <summary>
-    /// 对接码
-    /// </summary>
-    public string? FdBuildLicenseNo { get; set; }
-
-    /// <summary>
     /// 服务器最后一次提供的权威 JWT 原始文本。
     /// 在线更新时由服务器端推送，启动时优先使用此值验证授权。
     /// 若为 null，则回退到 .urban 文件。
@@ -150,14 +144,14 @@ public class LicenseInfo : Entity<Guid>
     /// 更新授权信息
     /// </summary>
     public void Update(Guid? authToken, DateTime authEndTime, string machineCode,
-        string? proName = null, string? accessCode = null, string? fdBuildLicenseNo = null);
+        string? proName = null, string? accessCode = null);
 }
 ```
 
 **授权验证机制**：
 1. **JWT 验证**：使用 RSA 公钥验证 RS256 签名
 2. **验证优先级**：LatestJwtToken → .urban 文件
-3. **Claims 提取**：proId, proName, accessCode, fdBuildLicenseNo, exp
+3. **Claims 提取**：proId, proName, accessCode, machineCode, exp
 4. **过期检查**：AuthEndTime（从 JWT exp claim 获取）
 5. **机器码验证**：当前机器码 == LicenseInfo.MachineCode
 

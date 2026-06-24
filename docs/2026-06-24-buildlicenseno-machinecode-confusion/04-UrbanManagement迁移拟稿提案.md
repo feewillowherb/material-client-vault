@@ -28,7 +28,7 @@ UrbanManagement 侧两类迁移，**同一发版窗口、可分 PR**：
 **§A AccessCode**
 
 1. EF 实体 `GovProject`：`BuildLicenseNo` 重命名为 `AccessCode`（或新列迁移后删旧列）。
-2. `GovProjectPullBackgroundWorker`：映射 `dto.AccessCode`、`dto.MachineCode`、`dto.FdBuildLicenseNo`。
+2. `GovProjectPullBackgroundWorker`：映射 `dto.AccessCode`、`dto.MachineCode`。
 3. 脏数据修复：以 BasePlatform 拉取结果为准刷新本地 `AccessCode`。
 4. 查询与验证：`GovProject.AccessCode == request.AccessCode`（替代原 `BuildLicenseNo`）。
 5. 政府出站：`payload.buildLicenseNo = govProject.AccessCode`（协议名保留）。
@@ -59,8 +59,6 @@ public class GovProject : Entity<Guid>
 
     /// <summary>城管接入码（原 BuildLicenseNo）</summary>
     public string AccessCode { get; set; } = string.Empty;
-
-    public string FdBuildLicenseNo { get; set; } = string.Empty;
     public string? MachineCode { get; set; }
     public string? AuthToken { get; set; }
     public DateTime? AuthEndTime { get; set; }
@@ -80,7 +78,6 @@ ALTER TABLE Gov_Project RENAME COLUMN BuildLicenseNo TO AccessCode;
 
 ```csharp
 AccessCode = x.AccessCode,
-FdBuildLicenseNo = x.FdBuildLicenseNo,
 MachineCode = x.MachineCode,
 ```
 
@@ -140,8 +137,7 @@ public class ClientLicenseUpdateDto
 {
     public string ProId { get; set; }
     public string? ProName { get; set; }
-    public string? AccessCode { get; set; }      // 原 BuildLicenseNo
-    public string? FdBuildLicenseNo { get; set; }
+    public string? AccessCode { get; set; }
     public DateTime AuthEndTime { get; set; }
     public string JwtToken { get; set; }         // 来自 BasePlatform 签发
 }

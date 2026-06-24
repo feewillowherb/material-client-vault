@@ -21,7 +21,7 @@
 | 新 API | `GET /api/auth/license-file` |
 | 签名算法 | RS256（与现网 Urban 一致） |
 | Issuer / Audience | `UrbanManagement` / `MaterialClient.Urban`（**保持不变**，避免客户端验签变更） |
-| Claims | `proId`, `proName`, **`accessCode`**, `fdBuildLicenseNo`, `machineCode`, `exp`, `jti` |
+| Claims | `proId`, `proName`, **`accessCode`**, `machineCode`, `exp`, `jti` |
 | 数据源 | `JC_ProductAuthority` + `JC_Project`（`AccessCode` 来自 02） |
 
 **本提案不包含** Urban 侧代理、Hub 推送、旧签发下线（见 04）。
@@ -35,8 +35,8 @@
 1. 新增 `BasePlatformJwtTokenGenerator`（自 `UrbanLicenseGenerator` 移植），配置 `Jwt:PrivateKey`。
 2. 实现 `AuthController`（或等价）`GET /api/auth/license-file`：按 `machineCode` + `proId` 查授权，组装 Claims 并返回 JWT 文件流或 JSON 包装。
 3. Claims 中 **`accessCode`** 取自 `JC_ProductAuthority.AccessCode`（非 `MachineCode`，非 `buildLicenseNo`）。
-4. `fdBuildLicenseNo` 保持 `MD5(ProId + "findongCode")` 计算规则。
-5. 提供集成测试：与 Urban 现网签发样本对比 Issuer、算法、Claim 键名（值因环境而异）。
+4. **不**签发 `fdBuildLicenseNo` claim（字段已废弃，见 [01](./01-解决方案.md) §Q2）。
+5. 提供集成测试：Issuer、算法、Claim 键名（**不含** `fdBuildLicenseNo` / `buildLicenseNo`）。
 
 ### 2.2 非目标
 
@@ -46,6 +46,7 @@
 | Urban `GET /api/urban/auth/license-file` 代理 | [04](./04-UrbanManagement迁移拟稿提案.md) |
 | 客户端公钥分发、`LicenseInfo` 重命名 | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
 | 在线激活 `POST /api/auth/activate` | EPIC 其他条目（可后续单独立项） |
+| `fdBuildLicenseNo` / 凡东 MD5 claim | 已废弃；本提案 **不**写入 JWT（见 01 §Q2） |
 
 ### 2.3 与 02 的接口约定
 
@@ -152,7 +153,6 @@ public sealed class BasePlatformJwtTokenGenerator
                 new Claim("proId", input.ProId.ToString()),
                 new Claim("proName", input.ProName ?? ""),
                 new Claim("accessCode", input.AccessCode ?? ""),
-                new Claim("fdBuildLicenseNo", input.FdBuildLicenseNo ?? ""),
                 new Claim("machineCode", input.MachineCode ?? ""),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             ])
@@ -170,11 +170,10 @@ public sealed class BasePlatformJwtTokenGenerator
 | `proId` | 请求 / `JC_Project` |
 | `proName` | `JC_Project.ProName` |
 | `accessCode` | `JC_ProductAuthority.AccessCode` |
-| `fdBuildLicenseNo` | `CommonHelper.GetFdBuildLicenseNo(proId)` |
 | `machineCode` | 请求 `machineCode` |
 | `exp` | `AuthEndDate` |
 
-**禁止**再写入 `buildLicenseNo` claim（迁移期若客户端仍读旧键，由 EPIC 客户端改造或短期双写 — **不在本提案默认范围**）。
+**禁止**写入 `buildLicenseNo`、`fdBuildLicenseNo` claim（均已废弃）。
 
 ### 5.3 私钥迁移
 
@@ -210,6 +209,7 @@ public sealed class BasePlatformJwtTokenGenerator
 | 5 | 过期 `AuthEndDate` | 4xx |
 | 6 | RS256 验签（公钥） | 通过 |
 | 7 | Issuer / Audience | 与现网 Urban 一致 |
+| 8 | Claims 键名 | **不含** `fdBuildLicenseNo`、`buildLicenseNo` |
 
 ---
 
@@ -239,7 +239,7 @@ public sealed class BasePlatformJwtTokenGenerator
 ## 10. 拟稿评审检查项
 
 - [ ] 安全：私钥存储方式与轮换预案
-- [ ] 与 Urban 现网 JWT 样本逐 Claim 对比
+- [ ] 与 Urban 现网 JWT 对比时，明确 **不**恢复 `fdBuildLicenseNo` claim
 - [ ] `productCode` 枚举（5001 / UrbanManagement 字符串）与调用方一致
 - [ ] 响应格式（stream vs JSON）与 04 代理实现对齐
 - [ ] P2 可与 P1 同发版还是必须晚于 P0
@@ -259,5 +259,5 @@ public sealed class BasePlatformJwtTokenGenerator
 
 ---
 
-**文档版本**：0.1（拟稿）  
+**文档版本**：0.2（拟稿）  
 **最后更新**：2026-06-24

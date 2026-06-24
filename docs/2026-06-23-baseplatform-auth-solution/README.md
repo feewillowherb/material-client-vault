@@ -1,6 +1,6 @@
 # Urban BasePlatform 授权方案调研
 
-> **字段语义**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。域内使用 **`AccessCode`**（城管接入码），**非**施工许可证号；`FdBuildLicenseNo` 为凡东 MD5。
+> **字段语义**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。域内使用 **`AccessCode`**；~~`FdBuildLicenseNo`~~ **已废弃**。
 
 ## 调研文档索引
 
@@ -65,7 +65,6 @@ public class GovProject : Entity<Guid>
 {
     // 现有字段...
     public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo，待重命名）
-    public string? FdBuildLicenseNo { get; set; }     // 凡东对接码（MD5）
     public DateTime? AuthEndTime { get; set; }        // 授权结束时间（已有）
 
     // 新增机器码授权字段

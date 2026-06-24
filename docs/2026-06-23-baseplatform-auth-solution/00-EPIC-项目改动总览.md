@@ -3,7 +3,7 @@
 > **字段语义（已定）**：与 [AccessCode 分离方案](../2026-06-24-buildlicenseno-machinecode-confusion/01-解决方案.md) 一致。  
 > - **`AccessCode`**：城管接入码（`GovProject` 原 `BuildLicenseNo` 重命名）  
 > - **`MachineCode`**：设备机器码  
-> - **`FdBuildLicenseNo`**：凡东 MD5  
+> - ~~**`FdBuildLicenseNo`**~~：**已废弃**（不再计算、出站或写入 JWT）  
 > - 政府 HTTP 出站 `buildLicenseNo` 协议名可保留，**值 = AccessCode**
 
 ## 概述
@@ -94,7 +94,7 @@ Content-Disposition: attachment; filename="license.urban"
 
 **实现要点**：
 - 使用 RS256 算法签名 JWT（与 UrbanManagement 保持一致）
-- JWT Claims 包含：`proId`, `proName`, `accessCode`, `fdBuildLicenseNo`, `exp`, `machineCode`
+- JWT Claims 包含：`proId`, `proName`, `accessCode`, `exp`, `machineCode`（**不含** `fdBuildLicenseNo`）
 - 私钥配置：`Jwt:PrivateKey`（从 UrbanManagement 移植）
 - 公钥分发给 MaterialClient.Urban 客户端（用于验证）
 - 返回的 JWT 文件可直接用作 .urban 文件
@@ -146,7 +146,7 @@ public class BasePlatformJwtTokenGenerator
                 new Claim("proId", request.ProId.ToString()),
                 new Claim("proName", ""),
                 new Claim("accessCode", ""),
-                new Claim("fdBuildLicenseNo", ""),
+                new Claim("machineCode", ""),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             ])
         };
@@ -204,7 +204,6 @@ public class GovProject : Entity<Guid>
     // 现有字段（保留）
     public string ProName { get; set; } = default!;
     public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo，列重命名）
-    public string? FdBuildLicenseNo { get; set; }      // 凡东 MD5 对接码
     public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
     public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
@@ -323,7 +322,6 @@ public class ClientLicenseUpdateDto
     public string ProId { get; set; }
     public string? ProName { get; set; }
     public string? AccessCode { get; set; }
-    public string? FdBuildLicenseNo { get; set; }
     public DateTime AuthEndTime { get; set; }
     public string JwtToken { get; set; }
 }
@@ -349,7 +347,6 @@ public class LicenseInfo : Entity<Guid>
     public DateTime AuthEndTime { get; set; }
     public string? ProName { get; set; }
     public string? AccessCode { get; set; }
-    public string? FdBuildLicenseNo { get; set; }
     public string? LatestJwtToken { get; set; }  // 服务器推送的最新 JWT
     public string MachineCode { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -393,7 +390,6 @@ public class UrbanAuthService
         await _licenseService.SyncProjectFieldsFromServerAsync(
             response.Data.ProName,
             response.Data.AccessCode ?? "",
-            response.Data.FdBuildLicenseNo ?? "",
             response.Data.AuthEndDate
         );
 

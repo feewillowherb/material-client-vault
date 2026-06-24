@@ -22,7 +22,6 @@
 | `MachineCode` | `JC_ProductAuthority`（语义收紧） | 仅设备码，客户端 `SetCorpAuthMachineCode` 回写 |
 | `AccessCode` | `ProjectCatalogItemDto` / `ListProjects` | 可控、**可空**字符串（`string?`），库表直出 |
 | `MachineCode` | `ProjectCatalogItemDto` / `ListProjects` | 可控、**可空**字符串（`string?`），库表直出 |
-| `FdBuildLicenseNo` | PublicApi 响应 | **计算字段**（非可控字符串）；保持 `MD5(ProId + "findongCode")` |
 
 **本提案不修改** `JC_Project.ShigongCerNo`，不参与城管同步链路。
 
@@ -36,7 +35,7 @@
 2. 授权后台（`FdSoft.BasePlatform`）UI 与保存逻辑：接入码 / 机器码分列、**均可由运营编辑**；保存时各字段独立持久化，避免改一项清空另一项。
 3. `SetCorpAuthMachineCode` 仅更新 `MachineCode`，不触碰 `AccessCode`；5001 开放与 5000 相同的绑定能力。
 4. `FdSoft.BasePlatform.PublicApi`：`ProjectCatalogController.ListProjects` 输出 `AccessCode`、`MachineCode`；筛选改为 `AccessCode` 非空 + 已授权。
-5. `ProjectCatalogItemDto` **删除** `BuildLicenseNo`；PublicApi 仅输出 `accessCode`、`machineCode`、`fdBuildLicenseNo`（**不**保留 `buildLicenseNo` 别名或兼容开关）。
+5. `ProjectCatalogItemDto` **删除** `BuildLicenseNo`；PublicApi 仅输出 `accessCode`、`machineCode`（**不**输出已废弃的 `fdBuildLicenseNo`）。
 
 ### 2.2 非目标（见分册拟稿）
 
@@ -294,9 +293,8 @@ BuildLicenseNo = authority.MachineCode ?? string.Empty,
 **改为**：
 
 ```csharp
-AccessCode       = authority.AccessCode,
-FdBuildLicenseNo = CommonHelper.IoTPwdMD5(parsedProId, "findongCode"),
-MachineCode      = authority.MachineCode,
+AccessCode  = authority.AccessCode,
+MachineCode = authority.MachineCode,
 ```
 
 **authority 查询**增加 `a.AccessCode`；`authorityMap` / `ProjectCatalogAuthorityInfo` record 同步扩展。
@@ -320,10 +318,10 @@ MachineCode      = authority.MachineCode,
 |------|------|------|
 | `accessCode` | 可控可空字符串 | **新增**，`authority.AccessCode` 直出 |
 | `machineCode` | 可控可空字符串 | **新增**，`authority.MachineCode` 直出 |
-| `fdBuildLicenseNo` | 计算字段 | 不变 |
-| ~~`buildLicenseNo`~~ | — | **删除**（原错误字段，语义由 `accessCode` 承接） |
+| ~~`buildLicenseNo`~~ | — | **删除** |
+| ~~`fdBuildLicenseNo`~~ | — | **删除**（凡东 MD5，已废弃） |
 
-> `accessCode`、`machineCode` 均为运营或客户端可维护的**可空字符串**（C# `string?`）；与 `fdBuildLicenseNo`（计算字段）区分。
+> `accessCode`、`machineCode` 均为运营或客户端可维护的**可空字符串**（C# `string?`）。
 
 **破坏性变更（已接受）**：UrbanManagement **未上线**，唯一下游可与 PublicApi **同期改造**；`ListProjects` 响应**不再**包含 `buildLicenseNo`，无需 `EmitObsoleteBuildLicenseNo` 或 DTO 别名。
 
@@ -362,7 +360,7 @@ flowchart LR
 | 4 | 5000 机器码绑定 | 行为与改造前一致 |
 | 5 | `ListProjects` 返回 | 含 `accessCode`、`machineCode`；未填/未绑定时为 `null` |
 | 6 | 无 `AccessCode` 的 5001 授权 | 不出现在目录列表（运营补录后可见） |
-| 7 | 响应 JSON | **不含** `buildLicenseNo` 字段 |
+| 7 | 响应 JSON | **不含** `buildLicenseNo`、`fdBuildLicenseNo` |
 
 ---
 

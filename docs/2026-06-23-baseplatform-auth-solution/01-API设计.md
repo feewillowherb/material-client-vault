@@ -19,21 +19,17 @@ public class GovProject : Entity<Guid>
 {
     public string ProName { get; set; } = default!;
     public string? AccessCode { get; set; }            // 城管接入码（原 BuildLicenseNo）
-    public string? FdBuildLicenseNo { get; set; }      // 凡东对接码（MD5）
 }
 ```
 
 ### 2.2 扩展后字段
 
 ```csharp
-// 扩展后的 UrbanManagement.GovProject 实体
 public class GovProject : Entity<Guid>
 {
-    // 现有字段（保留）
     public string ProName { get; set; } = default!;
-    public string? AccessCode { get; set; }            // 城管接入码
-    public string? FdBuildLicenseNo { get; set; }      // 凡东对接码
-    public DateTime? AuthEndTime { get; set; }         // 授权结束时间（已有）
+    public string? AccessCode { get; set; }
+    public DateTime? AuthEndTime { get; set; }
     public DateTime? AddTime { get; set; }             // 添加时间（已有）
 
     // ===== 新增：机器码授权字段 =====
@@ -48,7 +44,7 @@ public class GovProject : Entity<Guid>
 | 字段 | 变更 | 说明 |
 |-----|------|------|
 | AccessCode | **重命名**（原 BuildLicenseNo） | 城管接入码，PublicApi / 验证主键 |
-| FdBuildLicenseNo | **保留** | 凡东 MD5 对接码 |
+| FdBuildLicenseNo | **废弃** | 不再使用 |
 | AuthEndTime | **保留** | 授权结束时间（已有字段） |
 | MachineCode | **新增** | 机器码绑定 |
 | AuthToken | **新增** | BasePlatform 授权令牌 |
