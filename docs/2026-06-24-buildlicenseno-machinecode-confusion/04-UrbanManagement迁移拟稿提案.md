@@ -4,7 +4,7 @@
 > **创建日期**：2026-06-24  
 > **状态**：拟稿  
 > **范围**：**仅** `UrbanManagement`（ABP 城管服务端）  
-> **不在范围**：BasePlatform 库表/UI（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、BasePlatform JWT 签发实现（→ [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）、MaterialClient.Urban
+> **不在范围**：BasePlatform 库表/UI（→ [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md)）、BasePlatform JWT 签发实现（→ [03](./03-BasePlatform-JWT签发迁移拟稿提案.md)）、MaterialClient.Urban（→ [06](./06-MaterialClient.Urban迁移拟稿提案.md)）
 
 **前置**：[01-解决方案.md](./01-解决方案.md) · [05-联合发版说明.md](./05-联合发版说明.md)
 
@@ -43,7 +43,7 @@ UrbanManagement 侧两类迁移，**同一发版窗口、可分 PR**：
 ### 2.2 非目标
 
 - BasePlatform 表结构、授权后台 UI。  
-- 客户端 `LicenseInfo` 属性重命名（可后续单独立项）。  
+- 客户端 `LicenseInfo` 属性重命名 → [06](./06-MaterialClient.Urban迁移拟稿提案.md)。
 - 政府平台协议字段改名（仍叫 `buildLicenseNo`）。
 
 ---

@@ -29,7 +29,7 @@
 | 共用服务 | `ILicenseFileAppService`（Web 与 PublicApi 均调用，避免双份签发逻辑） |
 | 在线详规 | §5.10 概览 · §5.11 `SendAuthLicense` · §5.12 `activate-urban` · §5.13 与 `GetAuthClientLicense` 分界 |
 
-**本提案不包含** Urban 侧代理、Hub 推送、旧签发下线（见 04）；**不包含**客户端 `.urban` 导入实现（见 EPIC）。
+**本提案不包含** Urban 侧代理、Hub 推送、旧签发下线（见 04）；**不包含**客户端 `.urban` 导入实现（见 [06](./06-MaterialClient.Urban迁移拟稿提案.md)）。
 
 ---
 
@@ -51,7 +51,7 @@
 |------|------|
 | `JC_ProductAuthority.AccessCode` DDL / 迁移 | [02](./02-BasePlatform-AccessCode分列与ListProjects拟稿提案.md) |
 | Urban `POST /api/urban/auth/activate` 代理实现 | [04](./04-UrbanManagement迁移拟稿提案.md) |
-| MaterialClient 写入 `LatestJwtToken` | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
+| MaterialClient 写入 `LatestJwtToken` | [06](./06-MaterialClient.Urban迁移拟稿提案.md) |
 | ~~`POST /api/auth/verify`~~ / ~~`POST /api/urban/auth/verify`~~ | **不实施** |
 | `fdBuildLicenseNo` / 凡东 MD5 claim | 已废弃（见 01 §Q2） |
 | **非 5001** 的 `SendAuthLicense` / `DownloadAuth` | **不改动**（02 回归） |

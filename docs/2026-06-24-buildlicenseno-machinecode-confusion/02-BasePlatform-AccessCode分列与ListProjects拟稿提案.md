@@ -44,7 +44,7 @@
 | JWT 签发迁入 BasePlatform | [03-BasePlatform-JWT签发迁移拟稿提案.md](./03-BasePlatform-JWT签发迁移拟稿提案.md) |
 | UrbanManagement（AccessCode + JWT 代理/下线） | [04-UrbanManagement迁移拟稿提案.md](./04-UrbanManagement迁移拟稿提案.md) |
 | 发版顺序与依赖 | [05-联合发版说明.md](./05-联合发版说明.md) |
-| MaterialClient.Urban 客户端改造 | [EPIC](../2026-06-23-baseplatform-auth-solution/00-EPIC-项目改动总览.md) |
+| MaterialClient.Urban 客户端改造 | [06](./06-MaterialClient.Urban迁移拟稿提案.md) |
 
 ### 2.3 与 JWT 迁移的接口约定
 

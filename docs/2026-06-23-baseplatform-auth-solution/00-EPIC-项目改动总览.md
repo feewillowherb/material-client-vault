@@ -344,13 +344,12 @@ public class ClientLicenseUpdateDto
 
 #### 3.1 LicenseInfo 结构（AccessCode 重命名）
 
-**变更**：`BuildLicenseNo` 属性重命名为 **`AccessCode`**；其余字段不变。
+**变更**：`BuildLicenseNo` 属性重命名为 **`AccessCode`**；**移除 `AuthToken`**（客户端不持久化服务端授权令牌）；须写入 **`LatestJwtToken`**。
 ```csharp
 [Table("LicenseInfo")]
 public class LicenseInfo : Entity<Guid>
 {
     public Guid ProjectId { get; set; }
-    public Guid? AuthToken { get; set; }
     public DateTime AuthEndTime { get; set; }
     public string? ProName { get; set; }
     public string? AccessCode { get; set; }
@@ -545,7 +544,7 @@ UrbanManagement 仍在 `GovProject` 保留 `MachineCode` 副本，供 Pull / 政
 
 ### MaterialClient.LicenseInfo
 
-**变更**：`BuildLicenseNo` → **`AccessCode`**；激活/导入须写入 **`LatestJwtToken`**（权威 JWT）。
+**变更**：`BuildLicenseNo` → **`AccessCode`**；**不存储 `AuthToken`**；激活/导入须写入 **`LatestJwtToken`**（权威 JWT）。
 
 ---
 
