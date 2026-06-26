@@ -18,7 +18,7 @@
 |------|------|------|
 | **§A AccessCode** | 数据语义 | 本地 `LicenseInfo.BuildLicenseNo` → **`AccessCode`**；移除 **`FdBuildLicenseNo`**、**`AuthToken`** |
 | **§B JWT 验权** | 改造现网 | `StaticLicenseChecker`：**仅** `iss=BasePlatform`；JWT claim **`accessCode`** → 本地 `AccessCode`；校验 **`machineCode`** |
-| **§C 激活与导入** | 补齐缺口 | Refit **`POST /api/urban/auth/activate-urban`**；保留启动读 **`license.urban`** |
+| **§C 激活与导入** | 补齐缺口 | Refit **`POST /api/urban/auth/activate`**；保留启动读 **`license.urban`** |
 | **§D SignalR** | 对齐 Urban V2 | 保留 **`VerifyJwtAsync`**；适配 **`JwtAntiTamperResult`** / **`GetClientProjectLicenseInfo`**；可选 **`UpdateClientLicense`** |
 
 **与 Urban V2 的分歧（有意保留）**：Urban 提案写「客户端 `BuildLicenseNo` 暂不重命名」——本仓库仍执行 **`AccessCode` 重命名**（与 `GovProject.AccessCode` 语义一致）；Hub/JSON **wire 名**仍为 `buildLicenseNo`，客户端映射到 `AccessCode`。
@@ -33,10 +33,10 @@
 
 | 方法 | Urban 路径 | 说明 |
 |------|------------|------|
-| POST | **`/api/urban/auth/activate-urban`** | 代理 BasePlatform `POST /api/auth/activate-urban`；Body `{ productCode: 5001, code, machineCode }` |
+| POST | **`/api/urban/auth/activate`** | 代理 BasePlatform `POST /api/auth/activate-urban`；Body `{ productCode: 5001, code, machineCode }` |
 | GET | `/api/urban/auth/license-file` | 代理离线下载（运维/Urban 管理端为主；客户端可选手动部署 `license.urban`） |
 
-> **注意**：旧 vault 拟稿中的 `POST /api/urban/auth/activate` **不存在于 V2**；须用 **`activate-urban`**。
+> **路径约定**：客户端 → Urban 使用 **`activate`**；Urban → BasePlatform 内部仍调 **`activate-urban`**（与 EPIC、[04](./04-UrbanManagement迁移拟稿提案.md) 一致）。
 
 **激活成功响应**（Urban 透传 BasePlatform，字段以联调为准）须含 **`jwtToken`**，以及 `proId` / `proName` / `authEndDate`；接入码可在响应或 JWT claim 中提供。
 
@@ -83,7 +83,7 @@ Urban 与 MaterialClient.Urban **同期首发**即可；无需为「Urban 旧签
 
 ### 3.2 缺口（本提案补齐）
 
-- `IUrbanManagementApi` 无 **`activate-urban`**
+- `IUrbanAuthApi` 无 **`activate`**
 - `iss` / `machineCode` claim 未对齐 Urban V2
 - Hub DTO 仍用 `BuildLicenseNo` 字段名写入 `LicenseInfo`
 - 无 `UpdateClientLicense` 订阅（V2 可选）
@@ -154,7 +154,7 @@ ValidAudience = "MaterialClient.Urban";
 ### 6.1 Refit（`MaterialClient.Urban/Api/IUrbanManagementApi.cs`）
 
 ```csharp
-[Post("/api/urban/auth/activate-urban")]
+[Post("/api/urban/auth/activate")]
 Task<ApiResponse<ActivateUrbanResponse>> ActivateUrbanAsync(
     [Body] ActivateUrbanRequest request,
     CancellationToken ct = default);
@@ -164,7 +164,7 @@ Task<ApiResponse<ActivateUrbanResponse>> ActivateUrbanAsync(
 
 ### 6.2 `ILicenseService.ActivateUrbanAsync`（Common 层）
 
-1. 调 Urban **`activate-urban`**
+1. 调 Urban **`activate`**
 2. `CheckLicenseFromTokenAsync(jwtToken)`（含 machineCode）
 3. Insert/Update `LicenseInfo`：`LatestJwtToken` + Claims 元数据；**无 AuthToken**
 
@@ -224,7 +224,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | `MaterialClient.Common/Models/JwtAntiTamperResult.cs` | 注释：`BuildLicenseNo` = 接入码 → 存 AccessCode |
 | `MaterialClient.Common/Models/ClientProjectLicenseInfoDto.cs` | 映射到 AccessCode |
 | `MaterialClient.Urban/MaterialClientUrbanModule.cs` | 启动写 LatestJwtToken；AccessCode |
-| `MaterialClient.Urban/Api/IUrbanManagementApi.cs` | activate-urban |
+| `MaterialClient.Common/Api/IUrbanAuthApi.cs` | activate |
 | `MaterialClient.Urban/Services/UrbanServerUploadService.cs` | AccessCode 替代 BuildLicenseNo |
 | `MaterialClient.Urban/Services/UrbanAttachmentSyncService.cs` | 同上 |
 | Urban 授权 UI（新） | 在线激活 |
@@ -236,7 +236,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 
 | 依赖 | 来源 | 客户端前置条件 |
 |------|------|----------------|
-| `activate-urban` 代理 | Urban V2 §B | Refit 路径与响应含 `jwtToken` |
+| `activate` 代理 | Urban V2 §B | Refit 路径与响应含 `jwtToken` |
 | JWT `iss=BasePlatform` | Urban V2 `jwt-anti-tamper` | 更新 `StaticLicenseChecker` |
 | Hub `VerifyJwtAsync` 返回 BasePlatform JWT | Urban V2 tasks §3 | `StoreServerJwtAsync` 不变 |
 | `GetClientProjectLicenseInfo.buildLicenseNo` | Urban V2 §A | 映射 → `AccessCode` |
@@ -247,7 +247,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | 阶段 | 客户端交付 | 阻塞 |
 |------|------------|------|
 | P-Client-1 | AccessCode 实体 + `iss=BasePlatform` + machineCode 校验 | 可与 Urban 并行 |
-| P-Client-2 | `activate-urban` + UI | Urban JWT 委托已启用 |
+| P-Client-2 | `activate` + UI | Urban JWT 委托已启用 |
 | P-Client-3 | `UpdateClientLicense` handler | Urban Hub 推送就绪（可选） |
 
 ---
@@ -259,7 +259,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | 1 | LicenseInfo + Migration + 引用清理 | 1d |
 | 2 | StaticLicenseChecker（iss/claims/machineCode） | 0.5d |
 | 3 | TryExecuteStartupLicenseCheckAsync 回写 LatestJwtToken | 0.25d |
-| 4 | IUrbanManagementApi + ActivateUrbanAsync + UI | 1.5d |
+| 4 | IUrbanAuthApi + ActivateUrbanAsync + UI | 1.5d |
 | 5 | DeviceStatusSignalRClient + DTO 映射 | 0.5d |
 | 6 | Urban 上传服务 AccessCode | 0.25d |
 | 7 | 与 Urban V2 + BasePlatform 联调 | 1d |
@@ -276,7 +276,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | 3 | JWT claim `accessCode` | 写入 `LicenseInfo.AccessCode` |
 | 4 | JWT 含 `buildLicenseNo` / `fdBuildLicenseNo` claim 无 `accessCode` | **拒绝**（不读废弃 claim） |
 | 5 | `machineCode` 不匹配 | 启动失败 |
-| 6 | `activate-urban` 成功 | `LatestJwtToken` 有值；无 AuthToken |
+| 6 | `activate` 成功 | `LatestJwtToken` 有值；无 AuthToken |
 | 7 | Hub `VerifyJwtAsync` | `ServerJwt` 覆盖 `LatestJwtToken` |
 | 8 | Hub `GetClientProjectLicenseInfo` | JSON `buildLicenseNo` → `AccessCode` |
 | 9 | bootstrap `license.urban` | DB 含 `LatestJwtToken` |
