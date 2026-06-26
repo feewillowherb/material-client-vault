@@ -155,14 +155,16 @@ ValidAudience = "MaterialClient.Urban";
 
 ```csharp
 [Post("/api/urban/auth/activate")]
-Task<ApiResponse<ActivateUrbanResponse>> ActivateUrbanAsync(
+Task<ApiResponse<ActivateUrbanResponse>> ActivateAsync(
     [Body] ActivateUrbanRequest request,
     CancellationToken ct = default);
 ```
 
+> **命名**：C# 方法统一为 `ActivateAsync`（`IUrbanAuthApi`、`ILicenseService`、`IBasePlatformAuthHttpClient`）；DTO 类型名 `ActivateUrbanRequest` / `ActivateUrbanResponse*` 保留；HTTP 路径不变。
+
 `ActivateUrbanRequest`：`ProductCode = 5001`、`Code`、`MachineCode`（**不传 ProId**）。
 
-### 6.2 `ILicenseService.ActivateUrbanAsync`（Common 层）
+### 6.2 `ILicenseService.ActivateAsync`（Common 层）
 
 1. 调 Urban **`activate`**
 2. `CheckLicenseFromTokenAsync(jwtToken)`（含 machineCode）
@@ -219,7 +221,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | `MaterialClient.Common/Migrations/*` | 新 Migration |
 | `MaterialClient.Common/Services/StaticLicenseChecker.cs` | iss=BasePlatform；machineCode；AccessCode |
 | `MaterialClient.Common/Services/IStaticLicenseChecker.cs` | `LicenseCheckResult.AccessCode` |
-| `MaterialClient.Common/Services/Authentication/LicenseService.cs` | `ActivateUrbanAsync`；改 Store/Sync 签名 |
+| `MaterialClient.Common/Services/Authentication/LicenseService.cs` | `ActivateAsync`；改 Store/Sync 签名 |
 | `MaterialClient.Common/Services/DeviceStatusSignalRClient.cs` | Hub DTO 映射；可选 UpdateClientLicense |
 | `MaterialClient.Common/Models/JwtAntiTamperResult.cs` | 注释：`BuildLicenseNo` = 接入码 → 存 AccessCode |
 | `MaterialClient.Common/Models/ClientProjectLicenseInfoDto.cs` | 映射到 AccessCode |
@@ -259,7 +261,7 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 | 1 | LicenseInfo + Migration + 引用清理 | 1d |
 | 2 | StaticLicenseChecker（iss/claims/machineCode） | 0.5d |
 | 3 | TryExecuteStartupLicenseCheckAsync 回写 LatestJwtToken | 0.25d |
-| 4 | IUrbanAuthApi + ActivateUrbanAsync + UI | 1.5d |
+| 4 | IUrbanAuthApi + ActivateAsync + UI | 1.5d |
 | 5 | DeviceStatusSignalRClient + DTO 映射 | 0.5d |
 | 6 | Urban 上传服务 AccessCode | 0.25d |
 | 7 | 与 Urban V2 + BasePlatform 联调 | 1d |
@@ -303,5 +305,5 @@ _connection.On<ClientLicenseUpdateDto>("UpdateClientLicense", async dto => { ...
 
 ---
 
-**文档版本**：1.2（无旧 JWT 兼容）  
-**最后更新**：2026-06-25
+**文档版本**：1.3（C# 方法名 `ActivateAsync`，去除 Urban 后缀）  
+**最后更新**：2026-06-26
