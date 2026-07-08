@@ -2,7 +2,7 @@
 
 > **Date**: 2026-06-18
 > **Scope**: How to design a mechanism where the UrbanManagement server can proactively instruct online MaterialClient instances to package and upload their log files, with attention to performance and log file classification.
-> **Vault**: material-client-vault
+> **Vault**: material-client-vault · 项目源码在 [MaterialMonospec](../../../MaterialMonospec/)
 
 ---
 
