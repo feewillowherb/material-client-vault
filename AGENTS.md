@@ -3,10 +3,21 @@
 This vault follows the standard CodeRef root layout.
 
 - `docs/` stores research notes, explanations, and walkthroughs.
-- `repos/` stores Git submodules that point to source repositories or samples.
+- `repos/` 目录保留但当前不存放源码仓库（Windows Junction 本地映射已在 `.gitignore` 中排除）。
 - `index.yaml` is the canonical metadata entry for this vault root.
 
-Repositories under `repos/` should be maintained through Git submodules rather than copied directly into the vault root.
+## 项目仓库位置
+
+**项目源码仓库不在本 vault 内，而位于 [MaterialMonospec](../../../MaterialMonospec/)（OpenSpec 单仓库）**，包含：
+
+| 仓库 | 说明 |
+|------|------|
+| `MaterialClient` | 客户端主仓库（含 MaterialClient.Common、MaterialClient.Urban、SolidWaste 等模块） |
+| `UrbanManagement` | 城管服务端（ABP 10 + SignalR Hub） |
+| `BasePlatform` | 授权与产品管理平台 |
+| `BasePlatform.PublicApi` | 公共 API 层 |
+
+MaterialMonospec 同时承载 OpenSpec 规范（`openspec/changes/`），是规范与代码的统一仓库。调研文档中引用的源码路径（如 `MaterialClient.Common/Services/DeviceStatusSignalRClient.cs`）均指 MaterialMonospec 内的对应文件。
 
 The canonical `index.yaml` fields are:
 
