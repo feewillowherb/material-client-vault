@@ -1,7 +1,7 @@
 # Recycle 独立表单页面方案
 
 > **日期**：2026-07-09  
-> **状态**：UI 需求（待 OpenSpec / 实现）  
+> **状态**：综合设计（待实现）  
 > **关联**：[00-调研总览](./00-调研总览.md)、[04-仅有Lpr设备方案.md](./04-仅有Lpr设备方案.md)
 
 ---
@@ -40,7 +40,7 @@ Recycle 客户端（5020，`WeighingMode.Recycle`）**不应继续直接复用**
 | 4 | 材料名称 | `SearchableSelectionBox` → `Material.Name` | 映射市平台 `productName` / `materialName` |
 | 5 | 备注 | `Remark` | TextBox |
 
-父级 **`AttendedWeighingDetailView`**（毛/皮/净重、进/出场时间）与 **`AttendedWeighingWindow`**（收/发切换、PhotoGrid）**不变**，仍与 SolidWaste 共用；仅**表单区**独立。
+父级 **`AttendedWeighingDetailView`**（毛/皮/净重、进/出场时间，**重量 UI 统一按吨**）与 **`AttendedWeighingWindow`**（收/发切换、PhotoGrid）**不变**，仍与 SolidWaste 共用；仅**表单区**独立。
 
 ### 删除字段（Recycle 不使用）
 
@@ -50,7 +50,7 @@ Recycle 客户端（5020，`WeighingMode.Recycle`）**不应继续直接复用**
 | **所属镇街** | `SelectedStreetItem` / `SelectedStreet` | `SolidWasteInfo.Street` | ❌ 同上 |
 | **类型选择** | `SelectedSolidWasteType` | `SolidWasteInfo.SolidWasteType` | ❌ 同上 |
 
-上述三项为 SolidWaste / 内部导出业务字段，**市平台 §2.2 / §2.3 接口不要求**（见 [01-字段对照-22发料.md](./01-字段对照-22发料.md)）。Recycle 上报 `dataNo` 等业务唯一号由同步层从 `OrderNo` 等生成，**不依赖联单编号 UI**。
+上述三项为 SolidWaste / 内部导出业务字段，**市平台 §2.2 / §2.3 接口不要求**（见 [01-字段对照-22发料.md](./01-字段对照-22发料.md)）。Recycle 上报 **`dataNo` 权威来源为 `Waybill.OrderNo`**，**不依赖联单编号 UI**（见 [00-调研总览.md](./00-调研总览.md)）。
 
 ---
 
@@ -85,7 +85,7 @@ Recycle 客户端（5020，`WeighingMode.Recycle`）**不应继续直接复用**
 | `CompleteModeSpecificAsync` | 校验供应商、材料、**镇街、联单** | 校验供应商、材料；**不要求**镇街/联单/类型 |
 | `IsSolidWasteMode` | `true` | 改为 `IsRecycleMode` 或独立标志，避免误走 SolidWaste 导出逻辑 |
 
-保存/完成仍通过 `IWeighingMatchingService.UpdateSolidWasteModeAsync` 时，Recycle VM 应对 SolidWaste 专用参数传 `null`，或后续提案增加 `UpdateRecycleModeAsync` 专用入口（实现阶段再定）。
+**Recycle 必须使用独立的领域 Service/API**（如 `IRecycleWeighingService`、`UpdateRecycleModeAsync`），**禁止**调用 `UpdateSolidWasteModeAsync` 或复用 SolidWaste 领域更新路径（见 [00-调研总览.md](./00-调研总览.md) 设计定稿 #6）。
 
 ---
 
@@ -116,8 +116,9 @@ Recycle 客户端（5020，`WeighingMode.Recycle`）**不应继续直接复用**
 1. 复制 `SolidWasteModeFormView.axaml` → `RecycleModeFormView.axaml`，删除三字段行。
 2. 新建 `RecycleWeighingDetailViewModel`（继承 `AttendedWeighingDetailViewModelBase` 或从 SolidWaste VM 抽取共享基类）。
 3. 注册 DI；更新 `AttendedWeighingViewModel` Recycle 分支。
-4. 调整 `CompleteModeSpecificAsync` 去掉联单/镇街/类型校验。
-5. （可选）Recycle 主窗口隐藏 BillPhoto / 无 CameraConfigs 时依赖 [04-仅有Lpr设备方案.md](./04-仅有Lpr设备方案.md)。
+4. 新建 **Recycle 领域 Service**（`UpdateRecycleModeAsync` 等），VM 仅依赖 Recycle API。
+5. 调整 `CompleteModeSpecificAsync` 去掉联单/镇街/类型校验。
+6. （可选）Recycle 主窗口隐藏 BillPhoto / 无 CameraConfigs 时依赖 [04-仅有Lpr设备方案.md](./04-仅有Lpr设备方案.md)。
 
 ---
 

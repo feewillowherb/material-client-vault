@@ -1,7 +1,7 @@
 # 无 CameraConfigs 时的 LPR → UnmatchedEntryPhoto 方案
 
 > **日期**：2026-07-09  
-> **状态**：方案建议（待 OpenSpec / 实现）  
+> **状态**：综合设计（待实现）  
 > **关联**：[00-调研总览](./00-调研总览.md)、[02-字段对照-23收料.md](./02-字段对照-23收料.md)（`inPhoto` / `outPhotos`）
 
 ---
@@ -101,13 +101,11 @@ LPR 回调 → 落盘 Lpr/xxx.jpg
 | C | `WeighingRecordService.CreateWeighingRecordAsync` | 有 LPR 路径且（UrbanMode **或** 无 CameraConfigs）时调用 `SaveLprAttachmentAsync` |
 | D | 匹配后 | `CopyAttachmentsToWaybillAsync` 已有 UnmatchedEntryPhoto → Entry/Exit 改型，一般无需改 |
 
-**注意**：两条 `AttachmentFile` 共享路径时，LPR 替换/删除须同步处理两条记录。
-
 ### 收/发料与进/出场格
 
 - **未匹配前**：LPR 图经 `UnmatchedEntryPhoto` 显示在 PhotoGrid「进场」侧。
 - **匹配后**：进场记录 → `EntryPhoto`；出场记录 → `ExitPhoto`。
-- 市平台 §2.2 / §2.3 字段语义见 [01-字段对照-22发料.md](./01-字段对照-22发料.md)、[02-字段对照-23收料.md](./02-字段对照-23收料.md)。
+- UI 进/出场格为称重语境；**市平台 §2.2 `outPhotos` / §2.3 `inPhoto` 均取进场侧图片**（见 [00](./00-调研总览.md)、[01](./01-字段对照-22发料.md)、[02](./02-字段对照-23收料.md)）。
 
 ---
 
@@ -166,9 +164,9 @@ PhotoGrid → 空
 
 ## 与市平台上报的关系
 
-`RecycleDataSyncService` 已筛选 `ExitPhoto`、`Lpr`、`UrbanPhoto` 作为 `outPhotos` 来源。
+设计定稿：**§2.2 / §2.3 API 图片均使用进场侧附件**（`EntryPhoto` → `UnmatchedEntryPhoto` → `Lpr`），与 PhotoGrid 进/出场展示语义分离。
 
-本方案保证：**UI 可见（UnmatchedEntryPhoto）+ 同步可扫（Lpr）+ 匹配后可升级为 Entry/Exit**。
+本方案保证：**UI 可见（UnmatchedEntryPhoto）+ 同步可扫（Lpr / 进场类）+ 匹配后可升级为 Entry/Exit**。同步层实现时须按 [01](./01-字段对照-22发料.md)、[02](./02-字段对照-23收料.md) 调整取图，而非沿用当前代码对 `ExitPhoto` 的偏好。
 
 ---
 
@@ -179,7 +177,7 @@ PhotoGrid → 空
 3. 创建称重记录后，DB 存在 `Lpr` + `UnmatchedEntryPhoto`，`LocalPath` 相同。
 4. `PhotoGridView` 进场格显示该图。
 5. 进出场匹配后，运单为 `EntryPhoto` / `ExitPhoto`。
-6. （Recycle）§2.2 同步 `outPhotos` Base64 非空。
+6. （Recycle）运单已完成且 §2.2/§2.3 同步时，API 照片 Base64 非空（**进场侧**取图）。
 
 **负向**：配置 CameraConfigs 后，LPR **不应**再自动创建 `UnmatchedEntryPhoto`（除非产品另有要求）。
 
