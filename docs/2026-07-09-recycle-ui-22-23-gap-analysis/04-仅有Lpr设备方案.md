@@ -158,9 +158,9 @@ PhotoGrid → 空
 
 ---
 
-## 中长期：Recycle 独立照片 View（可选）
+## 中长期：Recycle UI 拆分（可选）
 
-双附件方案是**最小改动**。Recycle 若长期无四宫格 / 票据拍照需求，可另做 `RecyclePhotoView`、隐藏 `BillPhoto` / Hik 预览等 UI 分支；与本文方案不互斥。
+表单独立页见 [05-Recycle独立表单页面.md](./05-Recycle独立表单页面.md)。照片区若长期无四宫格 / 票据拍照需求，可另做 `RecyclePhotoView`、隐藏 `BillPhoto` / Hik 预览；与 LPR 双附件方案不互斥。
 
 ---
 
